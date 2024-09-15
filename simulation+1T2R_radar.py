@@ -162,5 +162,5 @@ fig = dh.draw_animation(listData[::10], title="目标检测结果——基于RDM
 fig.update_layout(yaxis_range=[-9, 9], xaxis_range=[0, 18], xaxis_title="前后方向", yaxis_title="左右方向")
 fig.show()
 
-dh.save_plotly_animation_as_video(fig, "simulation+1T2R_radar.mp4", 30)
+dh.save_plotly_animation_as_video(fig, 30)
 # %%

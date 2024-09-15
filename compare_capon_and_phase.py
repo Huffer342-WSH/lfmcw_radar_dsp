@@ -173,7 +173,7 @@ for i in range(len(positionPhase)):
 fig = dh.draw_animation(listData, title="单目标检测——相位差法和Capon算法峰值检测结果")
 fig.update_layout(yaxis_range=[-5, 5], xaxis_range=[0, 8], xaxis_title="前后方向", yaxis_title="左右方向")
 fig.show()
-# dh.save_plotly_animation_as_video(fig, "plotly_animation.mp4", fps=20)
+# dh.save_plotly_animation_as_video(fig,  fps=20)
 
 # 计算标准差
 posPhase = np.array([j for i in positionPhase for j in i])

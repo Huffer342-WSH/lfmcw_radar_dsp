@@ -3,7 +3,9 @@ import plotly.graph_objects as go
 from joblib import Parallel, delayed
 from moviepy.editor import ImageSequenceClip
 import os
-
+import tkinter as tk
+from tkinter import filedialog
+from tqdm import tqdm
 
 def draw_spectrum(spec, x=None, y=None, title: str = "default"):
     if x is None:
@@ -261,14 +263,13 @@ def draw_complex_Scatter3d(complex, title: str = "未命名"):
     return fig
 
 
-def save_plotly_animation_as_video(fig: go.Figure, output_path, fps=30):
+def save_plotly_animation_as_video(fig: go.Figure, fps=30):
     """
-    将Plotly的动画保存为视频文件。
+    将Plotly的动画保存为视频文件，并使用tkinter选择保存位置，显示保存图片进度条。
 
     参数:
     fig (go.Figure): 包含动画的 Plotly 图形对象。
-    output_path (str): 视频输出路径，包括文件名和扩展名（例如 'output.mp4'）。
-    fps (int): 视频的帧率 (frames per second)，默认为1帧每秒。
+    fps (int): 视频的帧率 (frames per second)，默认为30帧每秒。
     """
 
     def save_frame(fig: go.Figure, frame, frame_index, temp_dir):
@@ -276,6 +277,16 @@ def save_plotly_animation_as_video(fig: go.Figure, output_path, fps=30):
         fig.update(data=frame.data)
         fig.write_image(f"{temp_dir}/frame_{frame_index}.png")
 
+    # 使用 tkinter 打开文件对话框来选择保存位置
+    root = tk.Tk()
+    root.withdraw()  # 隐藏主窗口
+    output_path = filedialog.asksaveasfilename(defaultextension=".mp4", filetypes=[("MP4 files", "*.mp4")], title="Choose location to save the video")
+
+    if not output_path:  # 如果用户取消了操作，返回
+        print("No file selected.")
+        return
+
+    # 临时保存layout
     layout = fig.layout
     fig.update_layout(dict1=dict(updatemenus=[], sliders=[]), overwrite=True)
 
@@ -284,8 +295,8 @@ def save_plotly_animation_as_video(fig: go.Figure, output_path, fps=30):
     if not os.path.exists(temp_dir):
         os.makedirs(temp_dir)
 
-    # 使用 joblib 并行保存每一帧
-    Parallel(n_jobs=-1)(delayed(save_frame)(fig, frame, i, temp_dir) for i, frame in enumerate(fig.frames))
+    # 使用tqdm显示进度条，保存每一帧
+    Parallel(n_jobs=-1)(delayed(save_frame)(fig, fig.frames[i], i, temp_dir) for i in tqdm(range(len(fig.frames)), desc="Saving pictures"))
 
     # 获取所有图片的路径，按顺序生成视频
     image_files = [f"{temp_dir}/frame_{i}.png" for i in range(len(fig.frames))]
@@ -299,4 +310,5 @@ def save_plotly_animation_as_video(fig: go.Figure, output_path, fps=30):
         os.remove(image_file)
     os.rmdir(temp_dir)
 
+    # 恢复原始layout
     fig.layout = layout
