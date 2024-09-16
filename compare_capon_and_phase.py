@@ -17,7 +17,7 @@ numFrame, numChannel, numChrip, numSampling = radarDataCube.shape
 print(f"帧数    \t{numFrame}\n通道数\t{numChannel}\nchrip数\t{numChrip}\n采样点数\t{numSampling}")
 
 from scipy.constants import speed_of_light as c
-from myRadr.steering_vector import steering_vector
+from myRadar.steering_vector import steering_vector
 
 bandwidth = 1000e6  # 带宽
 fc = 24e9  # 载波频率

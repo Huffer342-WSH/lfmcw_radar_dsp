@@ -109,7 +109,7 @@ if __name__ == "__main__":
     import cProfile
     import drawhelp.draw as dh
     import plotly.graph_objects as go
-    from myRadr.generate_trajectory import trajGen_line
+    from myRadar.generate_trajectory import trajGen_line
     from scipy.fft import fft, fftshift, ifft, fft2
 
     frequency = 24e9

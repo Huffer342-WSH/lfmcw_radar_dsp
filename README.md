@@ -5,8 +5,8 @@
 
 ### 1. 辅助功能
 
-1. [myRadr/record_mouse.p](./myRadr/record_mouse.py) 录制鼠标轨迹，辅助仿真雷达信号
-2. [myRadr/lfmcw_radar_data_cube_generator.py](myRadr/lfmcw_radar_data_cube_generator.py) 生成雷达数据块
+1. [myRadar/record_mouse.p](./myRadar/record_mouse.py) 录制鼠标轨迹，辅助仿真雷达信号
+2. [myRadar/lfmcw_radar_data_cube_generator.py](myRadar/lfmcw_radar_data_cube_generator.py) 生成雷达数据块
 
 ### 2. 仿真
 
