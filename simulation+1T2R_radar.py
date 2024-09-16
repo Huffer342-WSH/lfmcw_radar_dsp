@@ -3,11 +3,16 @@ import numpy as np
 from scipy.fft import fftshift, fft, fft2
 import scipy.constants
 import scipy.io
+from sklearn.cluster import DBSCAN
+
 
 import joblib
 
-from myRadr.cfar import cfar_2d
-from myRadr.lfmcw_radar_data_cube_generator import generateRadarDataCube
+from myRadar.arraysys import angleDualCh
+from myRadar import polar2cart
+from myRadar.cfar import cfar_2d, cfar_1d
+from myRadar.lfmcw_radar_data_cube_generator import generateRadarDataCube
+from myRadar.cluster import dbscan_selectPoint
 
 import plotly.graph_objects as go
 import drawhelp.draw as dh
@@ -63,7 +68,7 @@ numSampling = 128
 print(f"numFrame: {numFrame}")
 
 # 生成数据
-radarDataCube, targetsPosRaw = generateRadarDataCube(
+radarDataCube, posSeriesTargetsRaw = generateRadarDataCube(
     frequency, bandwidth, timeChrip, timeIdle, timeNop, freqSampling, numSampling, numChrip, numFrame, posTx, posRx, targetsInfo
 )
 
@@ -75,44 +80,6 @@ resRange = scipy.constants.c / (2 * bandwidth * (numSampling / freqSampling) / t
 """
 
 # %%
-"""RDM分离目标后，使用相位差法测角"""
-
-
-def clac_theta(complex0, complex1):
-    """
-    使用相位差法计算角度
-
-    Args:
-        complex0: 第一个通道的复数信号
-        complex1: 第二个通道的复数信号
-
-    Returns:
-        theta: 角度，弧度
-    """
-
-    phase0 = np.angle(complex0)
-    phase1 = np.angle(complex1)
-    phaseDelta = phase0 - phase1
-    if phaseDelta < -np.pi:
-        phaseDelta += 2 * np.pi
-    elif phaseDelta > np.pi:
-        phaseDelta -= 2 * np.pi
-    theta = np.arcsin(phaseDelta / np.pi)
-    return theta
-
-
-def polar_to_cartesian(pos_polar):
-    """
-    将极坐标转换为直角坐标
-
-    Args:
-        pos_polar: 极坐标，形状为(N,2)的数组,第一列为极径，第二列为极角
-
-    Returns:
-        res: 直角坐标，形状为(N,2)的数组,第一列为X，第二列为Y
-    """
-    res = np.column_stack((pos_polar[:, 0] * np.cos(pos_polar[:, 1]), pos_polar[:, 0] * np.sin(pos_polar[:, 1])))
-    return res
 
 
 def frameProcess_doa_phase(frames):
@@ -134,33 +101,179 @@ def frameProcess_doa_phase(frames):
     (coords, _) = cfar_2d(specs[0], numTrain, numGuard, 3, type="Cross")
     for c in coords:
         r = c[1]
-        theta = clac_theta(rdms[0, c[0], c[1]], rdms[1, c[0], c[1]])
+        theta = angleDualCh(rdms[0, c[0], c[1]], rdms[1, c[0], c[1]])
         res.append([r * np.cos(theta), r * np.sin(theta)])
     res = np.array(res)
     return res
 
 
-# posList = joblib.Parallel(n_jobs=-1)(joblib.delayed(frameProcess_doa_phase)(f) for f in radarDataCube)
-posList = [frameProcess_doa_phase(f) for f in radarDataCube]
+posList = joblib.Parallel(n_jobs=-1)(joblib.delayed(frameProcess_doa_phase)(f) for f in radarDataCube)
+# posList = [frameProcess_doa_phase(f) for f in radarDataCube]
 
 
 # 绘图
 listData = []
-posRaw = np.mean(targetsPosRaw.reshape((2, -1, 4096, 3)), axis=2)
+posSeriesTargets_FrameMean = np.mean(posSeriesTargetsRaw.reshape((2, -1, 4096, 3)), axis=2)
 for i in range(len(posList)):
     coords = posList[i] * resRange
     if len(coords) == 0:
-        listData.append([go.Scatter(x=posRaw[:, i, 0], y=posRaw[:, i, 1], mode="markers", name="Raw")])
+        listData.append([go.Scatter(x=posSeriesTargets_FrameMean[:, i, 0], y=posSeriesTargets_FrameMean[:, i, 1], mode="markers", name="Raw")])
     else:
         listData.append(
             [
                 go.Scatter(x=coords[:, 0], y=coords[:, 1], mode="markers", name="Detected"),
-                go.Scatter(x=posRaw[:, i, 0], y=posRaw[:, i, 1], mode="markers", name="Raw"),
+                go.Scatter(x=posSeriesTargets_FrameMean[:, i, 0], y=posSeriesTargets_FrameMean[:, i, 1], mode="markers", name="Raw"),
             ]
         )
 fig = dh.draw_animation(listData[::10], title="目标检测结果——基于RDM+相位差法")
 fig.update_layout(yaxis_range=[-9, 9], xaxis_range=[0, 18], xaxis_title="前后方向", yaxis_title="左右方向")
 fig.show()
 
-dh.save_plotly_animation_as_video(fig, 30)
+# dh.save_plotly_animation_as_video(fig, 30)
+
+# %% [markdown]
+""" ## 2. 取出一帧数据，对比相位差发在基于RDM和RangeFFT的情况下的差别
+
+对于1T2R的雷达，只能从一组阵信号中得到一个目标的角度。为了雷达有更好的区分目标的能力，我们需要先在距离维度和速度维度上分离目标。
+
+2DFFT得到的RDM分离了速度和距离维度，可以更好的区分目标，只做RangeFFT就只能分离速度维度。不能像在RDM的基础上测角一样可以分离同一距离单元内的不同速度的目标。
+
+但是在低成本实际应用中，使用的MCU往往没有足够的内存和计算资源用于保存数据并计算Dopplor-FFT。所以可能需要使用基于RangeFFT的测角，对局部的距离单元可以保存数据做Dopplor-FFT再测角。
+
+当然这只是对于1T2R的雷达来说，对于多通道的雷达来说，通过阵列信号处理是能够区分出多个目标的
+"""
+
+# %%================================ 准备一帧数据 ================================
+
+# 获取两个目标位于同一个距离单元的帧的编号
+posXDiff = np.abs(np.linalg.norm(posSeriesTargetsRaw[0], axis=1) - np.linalg.norm(posSeriesTargetsRaw[1], axis=1))  # 径向距离差
+indexFrame_meet = np.unique(np.floor_divide(np.argwhere(posXDiff < 0.05), 4096))  # 两个目标径向距离相近的帧
+
+indexFrame = indexFrame_meet[-1] + 20
+print(f"Selected frame: {indexFrame}")
+multiChannelFrame = radarDataCube[indexFrame]
+posTargtes = np.mean(posSeriesTargetsRaw[:, (indexFrame - 1) * 4096 : indexFrame * 4096, :], axis=1)[:, :2]
+
+# 绘制RDM
+rdm = fftshift(fft2(multiChannelFrame), axes=1)
+ampSpec2D = np.abs(rdm[0])
+coords, noise_level = cfar_2d(ampSpec2D, (1, 3), (1, 1), 3)
+dh.draw_spectrum(ampSpec2D / noise_level, title="RDM 信号幅值/噪声水平")
+
+# %% ================================ RDM + 相位差法计算目标位置 ================================
+
+
+def detectTarget_RDMAndPhaseDiff(frames, resRange, resVelocity, eps):
+    r"""
+    2DFFT+相位差法计算目标位置
+
+    Parameters
+    ----------
+    frames : 3D array
+        3维数组，shape=(numChannel, numChrip, numSampling)，雷达数据立方体
+    resRange : float
+        距离分辨率
+    resVelocity : float
+        速度分辨率
+    eps : float
+        DBSCAN聚类的最大距离
+
+    Returns
+    -------
+    posCluster : 2D array
+        2维数组，shape=(numCluster, 2)，目标的二维坐标
+    """
+    if frames.ndim != 3:
+        raise ValueError("Input parameters 'frames' must be a 3D array")
+    if frames.shape[0] <= 1:
+        raise ValueError("Input parameters 'frames' must have at least 2 channel;")
+
+    # 2DFFT
+    rdm = fftshift(fft2(multiChannelFrame), axes=-2)
+
+    # 2DFFT幅值谱
+    ampSpec2D = np.sum(np.abs(rdm), axis=tuple(range(rdm.ndim - 2)))
+
+    # CFAR检测
+    idx2d, _ = cfar_2d(ampSpec2D, numTrain=(1, 3), numGuard=(1, 1), threshold=3)
+
+    # 2DFFT幅值谱对应的距离和角度
+    r = idx2d[:, 1] * resRange
+    theta = np.array([angleDualCh(rdm[0, c[0], c[1]], rdm[1, c[0], c[1]]) for c in idx2d])
+
+    # 将极坐标转换成二维坐标
+    posPointsCloud = polar2cart(np.column_stack((r, theta)))
+
+    # DBSCAN聚类
+    posCluster = dbscan_selectPoint(posPointsCloud, eps=eps, ampSpec=ampSpec2D[idx2d[:, 0], idx2d[:, 1]])
+
+    return posCluster
+
+
+posCluster_RDM = detectTarget_RDMAndPhaseDiff(multiChannelFrame, resRange, 0, eps=0.9)
+# ================================ RangeFFT + 相位差法计算目标位置 ================================
+
+# 计算相位使用相干累加，计算位置使用非相干累加。
+# 因为相干累加因为一帧的时间内通道间的目标造成相位差是几乎固定的，而噪声则是随机的，所以相干累加提高相位精度
+# 但是对于幅度谱测距来说，快速目标的信号在多普勒维度（速度维度）相位变化较大，累加反而会抑制信号的幅度，因此测距应该选择非相干累加
+
+
+def detectTarget_RangeFFTAndPhaseDiff(frames, resRange, resVelocity, eps):
+    """
+    RangeFFT + 相位差法目标检测
+
+    Parameters
+    ----------
+    frames : 3D array
+        3D array，shape=(numChannel, numChrip, numSampling), numChannel为通道数，numChrip为chrip数,numSampling为采样点数
+    resRange : float
+        距离分辨率
+    resVelocity : float
+        速度分辨率
+    eps : float
+        DBSCAN聚类的半径
+
+    Returns
+    -------
+    posCluster : 2D array
+        2维数组，shape=(numCluster, 2)，目标的二维坐标
+    """
+    if frames.ndim != 3:
+        raise ValueError("Input parameters 'frames' must be a 3D array")
+    if frames.shape[0] <= 1:
+        raise ValueError("Input parameters 'frames' must have at least 2 channel;")
+    RangeFFTFrame = fft(multiChannelFrame, axis=-1)
+    ampSpec = np.sum(np.abs(RangeFFTFrame), axis=tuple(range(RangeFFTFrame.ndim - 1)))
+    caSpec = np.sum(RangeFFTFrame, axis=-2)
+    idx, noise_level = cfar_1d(ampSpec, numTrain=int(0.5 / resRange), numGuard=1, threshold=3)
+    theta = angleDualCh(caSpec[0][idx], caSpec[1][idx])
+    posPointsCloud = polar2cart(np.column_stack((idx * resRange, theta)))
+    posCluster = dbscan_selectPoint(posPointsCloud, 3, ampSpec[idx])
+    return posCluster
+
+
+posCluster_RangeFFT = detectTarget_RangeFFTAndPhaseDiff(multiChannelFrame, resRange, 0, eps=0.9)
+
+# ================================ 绘图比较 ================================
+print(f"真实位置: {len(posTargtes)}\n簇的XY坐标为:\n {posTargtes}")
+
+print(f"RDM + DBScan 聚类后得到的簇的个数: {len(posCluster_RDM)}\n簇的XY坐标为:\n {posCluster_RDM}")
+print(f"RangeFFT + DBScan 聚类后得到的簇的个数: {len(posCluster_RangeFFT)}\n簇的XY坐标为:\n {posCluster_RangeFFT}")
+
+# 把点绘制出来
+go.Figure(
+    data=[
+        go.Scatter(x=posTargtes[:, 0], y=posTargtes[:, 1], mode="markers", name="真实位置"),
+        go.Scatter(x=posCluster_RDM[:, 0], y=posCluster_RDM[:, 1], mode="markers", name="RDM"),
+        go.Scatter(x=posCluster_RangeFFT[:, 0], y=posCluster_RangeFFT[:, 1], mode="markers", name="RangeFFT"),
+    ],
+    layout=go.Layout(
+        title="聚类后的目标",
+        yaxis_range=[-9, 9],
+        xaxis_range=[0, 18],
+        xaxis_title="前后方向",
+        yaxis_title="左右方向",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+    ),
+).show()
 # %%
