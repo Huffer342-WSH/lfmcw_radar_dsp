@@ -17,6 +17,8 @@ def dbscan_selectPoint(points, eps, ampSpec):
     Returns:
         numpy.ndarray: (L,N)簇的坐标，L为簇的个数，N为点云的维度
     """
+    if len(points) == 0:
+        return []
     labels = dbscan_cluster(points, eps, 1)
     pointGroups = dict()
     for i in range(len(labels)):
