@@ -22,7 +22,7 @@ def cfar_2d(mat, numTrain, numGuard, threshold, type="CrossMean"):
         noise_level = convolve2d(mat, convKernel, mode="same", boundary="wrap")
         coords = np.argwhere(mat / noise_level > threshold)
     elif type == "CrossMaxMean":
-        coords, noise_level = cfar_2d_cross_prefix(mat, numTrain, numGuard, threshold)
+        coords, noise_level = cfar_2d_CrossMaxMean(mat, numTrain, numGuard, threshold)
     else:
         raise NotImplementedError("unKnown CFAR type.")
 
@@ -89,6 +89,38 @@ def cfar_2d_cross_prefix(mat, numTrain, numGuard, threshold):
     coords = np.argwhere(mat / noise_level > threshold)
 
     return coords, noise_level
+
+
+def cfar_2d_CrossMaxMean(mat, numTrain, numGuard, threshold):
+    padWidth = np.array([numTrain[0] + numGuard[0], numTrain[1] + numGuard[1]])
+    padded_mat = np.pad(
+        mat,
+        pad_width=((numTrain[0] + numGuard[0], numTrain[0] + numGuard[0]), (numTrain[1] + numGuard[1], numTrain[1] + numGuard[1])),
+        mode="wrap",
+    )
+    trainMean = np.zeros(shape=(4, mat.shape[0], mat.shape[1]))  # 多加一个维度用来保存四个分支的均值
+
+    # 计算维度0方向上训练单元的和
+    prefixSum0 = np.zeros(shape=(mat.shape[0] + 1 + padWidth[0] * 2, mat.shape[1]))
+    prefixSum0[1:, :] = np.cumsum(padded_mat[:, padWidth[1] : -padWidth[1]], axis=0)
+    numCell = numTrain[0]
+    trainSum0_full = (prefixSum0[numCell:, :] - prefixSum0[:-numCell, :]) / numCell
+    trainMean[0] = trainSum0_full[: mat.shape[0], :]
+    trainMean[1] = trainSum0_full[-mat.shape[0] :, :]
+
+    # 计算维度1方向上训练单元的和
+    prefixSum1 = np.zeros(shape=(mat.shape[0], mat.shape[1] + 1 + padWidth[1] * 2))
+    prefixSum1[:, 1:] = np.cumsum(padded_mat[padWidth[0] : -padWidth[0], :], axis=1)
+    numCell = numTrain[1]
+    trainSum1_full = (prefixSum1[:, numCell:] - prefixSum1[:, :-numCell]) / numCell
+    trainMean[2] = trainSum1_full[:, : mat.shape[1]]
+    trainMean[3] = trainSum1_full[:, -mat.shape[1] :]
+
+    # 取四个分支中均值最大的作为噪声水平
+    noiselevel = np.max(trainMean, axis=0)
+
+    coords = np.argwhere(mat / noiselevel > threshold)
+    return coords, noiselevel
 
 
 def cfar_1d(mat, numTrain, numGuard, threshold, type="mean"):
