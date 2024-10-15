@@ -1,0 +1,23 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		}
+	],
+	"extensions": {
+		//使用VSCode Command "Extensions: Show Recommended Extensions" 来查看推荐扩展
+		"recommendations": [
+			"ms-python.python",
+			"ms-python.debugpy",
+			"ms-python.black-formatter",
+			"ms-toolsai.jupyter",
+			"VisualStudioExptTeam.vscodeintellicode",
+			"njpwerner.autodocstring",
+			"mhutchie.git-graph",
+			"eamodio.gitlens"
+		]
+	},
+	"settings": {
+		"jupyter.interactiveWindow.codeLens.commands": "jupyter.runcell, jupyter.runallcellsabove,jupyter.runcellandallbelow, jupyter.debugcell,jupyter.runallcells",
+	}
+}
