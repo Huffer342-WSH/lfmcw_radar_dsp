@@ -7,6 +7,7 @@ from sklearn.cluster import DBSCAN
 
 
 import joblib
+from tqdm import tqdm
 
 from myRadar.arraysys import angleDualCh
 from myRadar import polar2cart
@@ -43,9 +44,11 @@ targetsInfo.append(dict(rsc=1, times=trajTemp["timestamps"].ravel() * 10, pos=tr
 trajTemp = scipy.io.loadmat("./data/mouse_trajectory_2024_09_13_17_23_04.mat")
 targetsInfo.append(dict(rsc=1, times=trajTemp["timestamps"].ravel() * 10, pos=trajTemp["positions"] * 10))
 
+numTargets = len(targetsInfo)
+
 # 配置波形
 frequency = 24e9
-bandwidth = 1000e6
+bandwidth = 250e6
 timeChrip = 150e-6  # chirp调频的持续时间，和需要大于numSampling/freqSampling
 timeIdle = 200e-6  # 每一个Chrip后的空闲时间，或者说是一帧中，两个chrip的间隔
 timeNop = 2000e-6  # 一帧结束后的空闲时间
@@ -71,16 +74,33 @@ print(f"numFrame: {numFrame}")
 radarDataCube, posSeriesTargetsRaw = generateRadarDataCube(
     frequency, bandwidth, timeChrip, timeIdle, timeNop, freqSampling, numSampling, numChrip, numFrame, posTx, posRx, targetsInfo
 )
+posSeriesTargets_FrameMean = np.mean(posSeriesTargetsRaw.reshape((posSeriesTargetsRaw.shape[0], -1, numChrip * numSampling, 3)), axis=2)
 
 resRange = scipy.constants.c / (2 * bandwidth * (numSampling / freqSampling) / timeChrip)
+
+# %% 保存数据
+scipy.io.savemat(
+    file_name="./data/RadarData_Simulate.mat",
+    mdict=dict(
+        tergatTrajectory=posSeriesTargets_FrameMean,
+        radarDataCube=radarDataCube,
+        timeChrip=timeChrip,
+        timeChripGap=timeIdle,
+        timeFrameGap=timeNop,
+        frequency=frequency,
+        bandwidth=bandwidth * (numSampling / freqSampling) / timeChrip,
+        numPoint=numSampling,
+        numChrip=numChrip,
+        numFrame=numFrame,
+        numChannel=2,
+    ),
+    do_compression=True,
+)
 
 # %% [markdown]
 """ 
 ##  2. RDM分离目标后，使用相位差法测角
 """
-
-# %%
-
 
 def frameProcess_doa_phase(frames):
     """处理一帧数据，输出直角坐标系的检测结果
@@ -98,7 +118,7 @@ def frameProcess_doa_phase(frames):
     specs = np.abs(rdms)
     numGuard = np.array([1, 1])
     numTrain = np.array([2, 4])
-    (coords, _) = cfar_2d(specs[0], numTrain, numGuard, 3, type="Cross")
+    (coords, _) = cfar_2d(specs[0], numTrain, numGuard, 3, type="CrossMean")
     for c in coords:
         r = c[1]
         theta = angleDualCh(rdms[0, c[0], c[1]], rdms[1, c[0], c[1]])
@@ -113,7 +133,7 @@ posList = joblib.Parallel(n_jobs=-1)(joblib.delayed(frameProcess_doa_phase)(f) f
 
 # 绘图
 listData = []
-posSeriesTargets_FrameMean = np.mean(posSeriesTargetsRaw.reshape((2, -1, 4096, 3)), axis=2)
+posSeriesTargets_FrameMean = np.mean(posSeriesTargetsRaw.reshape((posSeriesTargetsRaw.shape[0], -1, 4096, 3)), axis=2)
 for i in range(len(posList)):
     coords = posList[i] * resRange
     if len(coords) == 0:
@@ -146,10 +166,13 @@ fig.show()
 # %%================================ 准备一帧数据 ================================
 
 # 获取两个目标位于同一个距离单元的帧的编号
-posXDiff = np.abs(np.linalg.norm(posSeriesTargetsRaw[0], axis=1) - np.linalg.norm(posSeriesTargetsRaw[1], axis=1))  # 径向距离差
-indexFrame_meet = np.unique(np.floor_divide(np.argwhere(posXDiff < 0.05), 4096))  # 两个目标径向距离相近的帧
+if posSeriesTargetsRaw.shape[0] >= 2:
+    posXDiff = np.abs(np.linalg.norm(posSeriesTargets_FrameMean[0], axis=1) - np.linalg.norm(posSeriesTargets_FrameMean[1], axis=1))  # 径向距离差
+    indexFrame_meet = np.argwhere(posXDiff < 0.05)  # 两个目标径向距离相近的帧
+    indexFrame = indexFrame_meet[-1][0]
+else:
+    indexFrame = 1780
 
-indexFrame = indexFrame_meet[-1] + 20
 print(f"Selected frame: {indexFrame}")
 multiChannelFrame = radarDataCube[indexFrame]
 posTargtes = np.mean(posSeriesTargetsRaw[:, (indexFrame - 1) * 4096 : indexFrame * 4096, :], axis=1)[:, :2]
@@ -157,7 +180,7 @@ posTargtes = np.mean(posSeriesTargetsRaw[:, (indexFrame - 1) * 4096 : indexFrame
 # 绘制RDM
 rdm = fftshift(fft2(multiChannelFrame), axes=1)
 ampSpec2D = np.abs(rdm[0])
-coords, noise_level = cfar_2d(ampSpec2D, (1, 3), (1, 1), 3)
+coords, noise_level = cfar_2d(ampSpec2D, (1, 3), (1, 1), 3, type="CrossMaxMean")
 dh.draw_spectrum(ampSpec2D / noise_level, title="RDM 信号幅值/噪声水平")
 
 # %% ================================ RDM + 相位差法计算目标位置 ================================
@@ -189,13 +212,13 @@ def detectTarget_RDMAndPhaseDiff(frames, resRange, resVelocity, eps):
         raise ValueError("Input parameters 'frames' must have at least 2 channel;")
 
     # 2DFFT
-    rdm = fftshift(fft2(multiChannelFrame), axes=-2)
+    rdm = fftshift(fft2(frames), axes=-2)
 
     # 2DFFT幅值谱
     ampSpec2D = np.sum(np.abs(rdm), axis=tuple(range(rdm.ndim - 2)))
 
     # CFAR检测
-    idx2d, _ = cfar_2d(ampSpec2D, numTrain=(1, 3), numGuard=(1, 1), threshold=3)
+    idx2d, _ = cfar_2d(ampSpec2D, numTrain=(1, 3), numGuard=(1, 1), threshold=2, type="CrossMaxMean")
 
     # 2DFFT幅值谱对应的距离和角度
     r = idx2d[:, 1] * resRange
@@ -210,7 +233,7 @@ def detectTarget_RDMAndPhaseDiff(frames, resRange, resVelocity, eps):
     return posCluster
 
 
-posCluster_RDM = detectTarget_RDMAndPhaseDiff(multiChannelFrame, resRange, 0, eps=0.9)
+posCluster_RDM = detectTarget_RDMAndPhaseDiff(multiChannelFrame, resRange, 0, eps=1.5)
 # ================================ RangeFFT + 相位差法计算目标位置 ================================
 
 # 计算相位使用相干累加，计算位置使用非相干累加。
@@ -242,13 +265,13 @@ def detectTarget_RangeFFTAndPhaseDiff(frames, resRange, resVelocity, eps):
         raise ValueError("Input parameters 'frames' must be a 3D array")
     if frames.shape[0] <= 1:
         raise ValueError("Input parameters 'frames' must have at least 2 channel;")
-    RangeFFTFrame = fft(multiChannelFrame, axis=-1)
+    RangeFFTFrame = fft(frames, axis=-1)
     ampSpec = np.sum(np.abs(RangeFFTFrame), axis=tuple(range(RangeFFTFrame.ndim - 1)))
     caSpec = np.sum(RangeFFTFrame, axis=-2)
     idx, noise_level = cfar_1d(ampSpec, numTrain=int(0.5 / resRange), numGuard=1, threshold=3)
     theta = angleDualCh(caSpec[0][idx], caSpec[1][idx])
     posPointsCloud = polar2cart(np.column_stack((idx * resRange, theta)))
-    posCluster = dbscan_selectPoint(posPointsCloud, 3, ampSpec[idx])
+    posCluster = dbscan_selectPoint(posPointsCloud, eps, ampSpec[idx])
     return posCluster
 
 
@@ -276,4 +299,34 @@ go.Figure(
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
     ),
 ).show()
+
+
+# %%
+listDT_RDM = joblib.Parallel(n_jobs=-1)(
+    joblib.delayed(detectTarget_RDMAndPhaseDiff)(radarDataCube[i], resRange, 0, 0.9) for i in tqdm(range(len(radarDataCube)))
+)
+
+listDT_RangeFFT = joblib.Parallel(n_jobs=-1)(
+    joblib.delayed(detectTarget_RangeFFTAndPhaseDiff)(radarDataCube[i], resRange, 0, 0.9) for i in tqdm(range(len(radarDataCube)))
+)
+
+
+# %%
+def calc_sd(x, std):
+    varSum = 0
+    varNum = 0
+    for i in range(len(x)):
+        if len(x[i]) == numTargets:
+            varSum += np.linalg.norm(x[i] - std[:, i, :2], axis=1) ** 2
+            varNum += numTargets
+    sd = np.sqrt(varSum / varNum)
+    return sd
+
+
+sdRDM = calc_sd(listDT_RDM, posSeriesTargets_FrameMean)
+sdRangeFFT = calc_sd(listDT_RangeFFT, posSeriesTargets_FrameMean)
+
+print(f"标准差：  RDM:{sdRDM}  RangeFFT:{sdRangeFFT}")
+
+
 # %%
