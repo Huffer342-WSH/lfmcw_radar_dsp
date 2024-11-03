@@ -13,7 +13,7 @@ def cfar_2d(mat, numTrain, numGuard, threshold, type="CrossMean"):
     convKernel = np.zeros(shape)
 
     # CA-CFAR,十字形状
-    if type == "CrossMean":
+    if type == "CA" or type == "Cell-Averanging":
         convKernel[: numTrain[0], np.floor_divide(shape[1], 2)] = 1
         convKernel[-numTrain[0] :, np.floor_divide(shape[1], 2)] = 1
         convKernel[np.floor_divide(shape[0], 2), : numTrain[1]] = 1
@@ -21,8 +21,8 @@ def cfar_2d(mat, numTrain, numGuard, threshold, type="CrossMean"):
         convKernel /= np.sum(convKernel)
         noise_level = convolve2d(mat, convKernel, mode="same", boundary="wrap")
         coords = np.argwhere(mat / noise_level > threshold)
-    elif type == "CrossMaxMean":
-        coords, noise_level = cfar_2d_CrossMaxMean(mat, numTrain, numGuard, threshold)
+    elif type == "GOCA" or type == "Greatest-of-Cell-Averaging":
+        coords, noise_level = cfar2d_goca(mat, numTrain, numGuard, threshold)
     else:
         raise NotImplementedError("unKnown CFAR type.")
 
@@ -91,7 +91,7 @@ def cfar_2d_cross_prefix(mat, numTrain, numGuard, threshold):
     return coords, noise_level
 
 
-def cfar_2d_CrossMaxMean(mat, numTrain, numGuard, threshold):
+def cfar2d_goca(mat, numTrain, numGuard, threshold):
     padWidth = np.array([numTrain[0] + numGuard[0], numTrain[1] + numGuard[1]])
     padded_mat = np.pad(
         mat,
