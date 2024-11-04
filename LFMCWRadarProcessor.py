@@ -61,6 +61,7 @@ class RadarPointCloud:
     radialVelocity: float  # 径向速度
     theta: float  # 方位角
     amplitude: float  # 幅值
+    snr: float  # 信噪比
 
 
 class LFMCWRadarProcessor:
@@ -139,7 +140,7 @@ class LFMCWRadarProcessor:
         主要是目标跟踪，在点云数据的基础上，经过聚类、关联等数据处理得目标轨迹
         """
 
-    def searchPeak_in_AmpSpec(self, rdm, numTrain, numGuard, thCFAR=1.5, thAMP=0.1, type="CrossMaxMean"):
+    def searchPeak_in_AmpSpec(self, rdm, numTrain, numGuard, thCFAR=1.5, thAMP=0.1, type="GOCA"):
         ampSpec2D = np.abs(rdm[0]) + np.abs(rdm[1])
         (_, noiselevel) = cfar_2d(ampSpec2D, numTrain, numGuard, thCFAR, type)
         snr = ampSpec2D / noiselevel
@@ -156,7 +157,7 @@ class LFMCWRadarProcessor:
         b = amp[:-1] < amp[1:]
         bools[:-1] &= ~(a & b)
         bools[1:] &= ~(a & ~b)
-        # indices = indices[bools]
+        indices = indices[bools]
 
         points = []
         for index in indices:
@@ -179,6 +180,9 @@ class LFMCWRadarProcessor:
 
     def getPointsPosition(self):
         return [[p.radius * np.cos(p.theta), p.radius * np.sin(p.theta)] for p in self.pointClouds]
+
+    def getObservation(self):
+        return [[p.radius, p.theta, p.radialVelocity] for p in self.pointClouds]
 
 
 # %%
@@ -267,7 +271,7 @@ def showOneFrame(index):
     frame = frame.transpose(1, 0)
     rdm = fft2(frame, axes=(-2, -1))
     ampSepc = np.abs(rdm)
-    coords, noise = cfar_2d(ampSepc, (1, 1), (4, 5), 3.5, type="CrossMaxMean")
+    coords, noise = cfar_2d(ampSepc, (1, 1), (4, 5), 3.5, type="GOCA")
     dh.draw_spectrum(ampSepc)
     dh.draw_spectrum(ampSepc / noise)
     print(coords)

@@ -105,9 +105,8 @@ def draw_scatter_list(y, x=None, title: str = "未命名", mode="markers"):
 
     ylim = cals_lim(y)
     if x is None:
-        xlim = None
-    else:
-        xlim = cals_lim(x)
+        x = [np.arange(len(k)) for k in y]
+    xlim = cals_lim(x)
 
     fig = go.Figure(
         data=go.Scatter(x=x[0], y=y[0], mode=mode),
@@ -218,15 +217,15 @@ def draw_animation(listData, title: str = "未命名") -> go.Figure:
     fig.update_layout(
         title=title,
         scene=dict(
-            zaxis=dict(autorange=True),
-            aspectratio=dict(x=1, y=1, z=1),
+            # zaxis=dict(autorange=True),
+            # aspectratio=dict(x=1, y=1, z=1),
             camera=dict(projection=dict(type="orthographic")),
         ),
         updatemenus=[
             {
                 "buttons": [
                     {
-                        "args": [None, frame_args(10)],
+                        "args": [None, frame_args(0)],
                         "label": "&#9654;",  # play symbol
                         "method": "animate",
                     },
@@ -294,6 +293,7 @@ def save_plotly_animation_as_video(fig: go.Figure, fps=30):
     temp_dir = "frames"
     if not os.path.exists(temp_dir):
         os.makedirs(temp_dir)
+    print("Saving pictures...")
 
     # 使用tqdm显示进度条，保存每一帧
     Parallel(n_jobs=-1)(delayed(save_frame)(fig, fig.frames[i], i, temp_dir) for i in tqdm(range(len(fig.frames)), desc="Saving pictures"))
