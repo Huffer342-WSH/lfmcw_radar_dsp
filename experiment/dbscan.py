@@ -7,14 +7,14 @@ import plotly.graph_objects as go
 
 
 centers = [[1, 1], [-1, -1], [1, -1], [-1, 1]]
-X, labels_true = make_blobs(n_samples=750, centers=centers, cluster_std=0.5)
+X, labels_true = make_blobs(n_samples=750, centers=centers, cluster_std=0.2)
 
 X = StandardScaler().fit_transform(X)
 
 go.Figure(data=[go.Scatter(x=X[:, 0], y=X[:, 1], mode="markers")], layout=go.Layout(title="原始数据")).show()
 
-min_samples = 50
-eps = 0.5
+min_samples = 10
+eps = 0.3
 # %%
 """ 使用scikit-learn中的DBSCAN算法 """
 
@@ -90,11 +90,11 @@ def getneighborhoods(i, eps, D, neighbors):
 
     count = 0
     for j in range(0, i):
-        if D[idx(i, j)] < eps:
+        if D[idx(i, j)] <= eps:
             neighbors[count] = j
             count += 1
     for j in range(i + 1, N):
-        if D[idx(j, i)] < eps:
+        if D[idx(j, i)] <= eps:
             neighbors[count] = j
             count += 1
 
@@ -115,21 +115,23 @@ def dbscan_core(N, eps, min_samples, getneighborhoods, *args):
         isVisited.add(i)
         if len(neighbors) < min_samples:
             continue
+        j = i
+        _labels[j] = label_num
         while True:
-            if _labels[i] == -1:
-                _labels[i] = label_num
-                neighbors = getneighborhoods(i, eps, *args)
-                if i in isVisited:
-                    print(f"重复查询:{i}")
-                isVisited.add(i)
-                if len(neighbors) >= min_samples:
-                    for v in neighbors:
-                        if _labels[v] == -1:
-                            stack.append(v)
+            neighbors = getneighborhoods(j, eps, *args)
+            if j in isVisited:
+                print(f"重复查询:{j}")
+            isVisited.add(j)
+            if len(neighbors) >= min_samples:
+                for v in neighbors:
+                    if _labels[v] == -1:
+                        stack.append(v)
+                        _labels[v] = label_num
             if stack.__len__() == 0:
                 break
-            i = stack.pop()
+            j = stack.pop()
         label_num += 1
+    print(f"{isVisited.__len__()}个点被标记")
     return _labels
 
 
@@ -139,7 +141,7 @@ neighbors = np.zeros(shape=(N - 1), dtype=int)
 for i in range(1, N):
     for j in range(0, i):
         D[i * (i - 1) // 2 + j] = np.linalg.norm(X[i] - X[j])
-_labels = dbscan_core(N, eps, min_samples, getneighborhoods, D, neighbors)
+_labels = dbscan_core(N, eps, min_samples - 1, getneighborhoods, D, neighbors)
 
 draw(X, _labels).show()
 
