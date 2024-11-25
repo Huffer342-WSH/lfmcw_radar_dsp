@@ -180,7 +180,7 @@ posTargtes = np.mean(posSeriesTargetsRaw[:, (indexFrame - 1) * 4096 : indexFrame
 # 绘制RDM
 rdm = fftshift(fft2(multiChannelFrame), axes=1)
 ampSpec2D = np.abs(rdm[0])
-coords, noise_level = cfar_2d(ampSpec2D, (1, 3), (1, 1), 3, type="CrossMaxMean")
+coords, noise_level = cfar_2d(ampSpec2D, (1, 3), (1, 1), 3, type="GOCA")
 dh.draw_spectrum(ampSpec2D / noise_level, title="RDM 信号幅值/噪声水平")
 
 # %% ================================ RDM + 相位差法计算目标位置 ================================
@@ -218,7 +218,7 @@ def detectTarget_RDMAndPhaseDiff(frames, resRange, resVelocity, eps):
     ampSpec2D = np.sum(np.abs(rdm), axis=tuple(range(rdm.ndim - 2)))
 
     # CFAR检测
-    idx2d, _ = cfar_2d(ampSpec2D, numTrain=(1, 3), numGuard=(1, 1), threshold=2, type="CrossMaxMean")
+    idx2d, _ = cfar_2d(ampSpec2D, numTrain=(1, 3), numGuard=(1, 1), threshold=2, type="GOCA")
 
     # 2DFFT幅值谱对应的距离和角度
     r = idx2d[:, 1] * resRange

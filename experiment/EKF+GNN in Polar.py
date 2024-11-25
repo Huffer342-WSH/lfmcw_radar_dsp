@@ -1,8 +1,22 @@
 """
-跟踪步骤
+对于单个目标来说，目标跟踪分三个阶段： 航迹起始，航迹关联，航迹结束
 
-1. 预测：使用k-1时刻的状态向量预测k时刻的状态向量 x_k|k-1 = f(x_k-1|k-1)
-2. 关联：
+航迹起始阶段需要排除一些杂波的干扰，在起始延迟和虚假率之间进行平衡
+
+航迹关联算法需要解决多目标关联问题，以及关联失败时的预测。常用的多目标数据关联算法有全局最近邻(GNN)、联合概率数据关联(JPDA)、多假设跟踪(MHT)等。
+
+航迹结束阶段需要判断目标是否已经消失，目标走出ROI，以及关联失败的时间太长或者误差协方差太大时删除tracker
+
+对于整个系统来说，每一帧都要执行上文的三个步骤，完成多目标跟踪，其中数据关联部分步骤大致如下：
+
+1. 预测：使用k-1时刻的状态向量预测k时刻的状态向量，格局测量模型将预测状态向量转化为预测测量值 
+    - x_k|k-1 = f(x_k-1|k-1)
+    - z_k|k-1 = h(x_k|k-1)
+2. 关联：匹配预测测量值和实际测量值
+
+3. 更新：将新匹配的测量值添加到tracker中，通过滤波算法得到纠正后的状态向量 x_k|k
+
+
 
 """
 
@@ -29,15 +43,42 @@ for file in file_list:
 num_steps = min([len(i["times"]) for i in targetsInfo])
 
 # 设置参数
-noise_num_max = 3
-noise_radius = 0.2
+clutter_num_max = 2
+
+
+# %%
+# 设置状态转移模型
+# 状态向量[x,vx,y,vy,z,vz]，匀速运动模型，三个维度互相独立
+
+from stonesoup.models.transition.linear import CombinedLinearGaussianTransitionModel, ConstantVelocity
+
+transition_model = CombinedLinearGaussianTransitionModel([ConstantVelocity(0.5), ConstantVelocity(0.5), ConstantVelocity(0.5)])
+
+# 设置测量模型
+# 测量向量为 [phi,r,vr] 即[方位角，径向距离，径向速度]
+# z = Hx ， x为状态向量，H为测量矩阵，z为测量值
+
+from stonesoup.models.measurement.nonlinear import CartesianToElevationBearingRangeRate
+from stonesoup.types.array import StateVector
+from stonesoup.types.state import State
+
+measurement_model = CartesianToElevationBearingRangeRate(
+    ndim_state=6,
+    mapping=[0, 2, 4],
+    noise_covar=np.diag([0, 5 / 180 * np.pi, 0.2, 0.01]) ** 2,
+)
+
+from scipy.linalg import inv
+from stonesoup.functions import sphere2cart
+from types import MethodType
+
 
 # %%
 # 生成时间戳
 start_time = datetime.now().replace(microsecond=0)
 
 timesteps = [start_time + timedelta(seconds=t) for t in targetsInfo[0]["times"][:num_steps]]
-# %%
+
 # 生成真值轨迹
 # 真值是状态向量的格式[x,y,vx,vy]，笛卡尔坐标系
 from stonesoup.types.groundtruth import GroundTruthPath, GroundTruthState
@@ -53,69 +94,6 @@ for i, target in enumerate(targetsInfo):
     states = [GroundTruthState(x, start_time + timedelta(seconds=t)) for x, t in zip(stateVectors, timestamps)]
     truths.add(GroundTruthPath(states=states, id=i))
 
-# %%
-# 绘制真值轨迹
-from stonesoup.plotter import AnimatedPlotterly
-
-plotter = AnimatedPlotterly(timesteps, tail_length=0.3)
-plotter.plot_ground_truths(truths, [0, 2])
-plotter.fig
-
-
-# %% 设置运动模型
-
-from stonesoup.models.transition.linear import CombinedLinearGaussianTransitionModel, ConstantVelocity
-
-transition_model = CombinedLinearGaussianTransitionModel([ConstantVelocity(0.3), ConstantVelocity(0.3), ConstantVelocity(0)])
-
-
-# %%
-# 设置测量模型
-# 测量向量为 [phi,r,vr] 即[方位角，径向距离，径向速度]
-# z = Hx ， x为状态向量，H为测量矩阵，z为测量值
-from stonesoup.models.measurement.nonlinear import CartesianToBearingRangeRate
-from stonesoup.types.array import StateVector
-from stonesoup.types.state import State
-
-measurement_model = CartesianToBearingRangeRate(
-    ndim_state=6,
-    mapping=[0, 2, 4],
-    noise_covar=np.diag([5 / 180 * np.pi, 0.2, 0.01]) ** 2,
-)
-
-from scipy.linalg import inv
-from stonesoup.functions import sphere2cart
-from types import MethodType
-
-
-def inverse_function(self, detection, **kwargs) -> StateVector:
-    phi, rho, rho_rate = detection.state_vector
-    theta = 0
-
-    x, y, z = sphere2cart(rho, phi, theta)
-
-    x_rate, y_rate, z_rate = sphere2cart(rho_rate, phi, theta)
-
-    inv_rotation_matrix = inv(self.rotation_matrix)
-
-    out_vector = StateVector([[0.0], [0.0], [0.0], [0.0], [0.0], [0.0]])
-    out_vector[self.mapping, 0] = x, y, z
-    out_vector[self.velocity_mapping, 0] = x_rate, y_rate, z_rate
-
-    out_vector[self.mapping, :] = inv_rotation_matrix @ out_vector[self.mapping, :]
-    out_vector[self.velocity_mapping, :] = inv_rotation_matrix @ out_vector[self.velocity_mapping, :]
-
-    out_vector[self.mapping, :] = out_vector[self.mapping, :] + self.translation_offset
-    out_vector[self.velocity_mapping, :] = out_vector[self.velocity_mapping, :] + self.velocity
-
-    return out_vector
-
-
-# 添加inverse_function方法到measurement_model，用于将测量值转化为状态向量
-measurement_model.inverse_function = MethodType(inverse_function, measurement_model)
-
-
-# %%
 # 生成带噪声的测量值，作为仿真的输入
 from scipy.stats import uniform, norm
 
@@ -137,18 +115,25 @@ for k in range(len(stateVectors)):
             )
 
         # 生成速度为0的杂点，在真实目标背后
-        truth_phi, truth_rho, truth_rho_rate = measurement_model.function(truth[k])
-        for _ in range(np.random.randint(noise_num_max)):
+        truth_theta, truth_phi, truth_rho, truth_rho_rate = measurement_model.function(truth[k])
+        for _ in range(np.random.randint(clutter_num_max + 1)):
+            theta = truth_theta
             phi = uniform.rvs(truth_phi - 0.2, 0.4)
             rho = uniform.rvs(truth_rho + 1, 5)
             rho_rate = 0
-            measurement_set.add(Clutter(np.array([[phi], [rho], [rho_rate]]), timestamp=truth[k].timestamp, measurement_model=measurement_model))
+            measurement_set.add(Clutter(np.array([[theta], [phi], [rho], [rho_rate]]), timestamp=truth[k].timestamp, measurement_model=measurement_model))
     all_measurements.append(measurement_set)
 
+
 # %%
-# 绘制测量值
+# 绘图
+from stonesoup.plotter import AnimatedPlotterly
+
+plotter = AnimatedPlotterly(timesteps, tail_length=0.2)
+plotter.plot_ground_truths(truths, [0, 2])
 plotter.plot_measurements(all_measurements, [0, 2])
 plotter.fig
+
 
 # %%
 # 创建拓展卡尔曼滤波器
@@ -180,38 +165,60 @@ class EuclideanBearingRangeRate(Measure):
 
 
 # 极坐标转化成直角坐标后计算欧式距离，即圆形波门
-# hypothesiser = DistanceHypothesiser(predictor, updater, measure=EuclideanBearingRangeRate(), missed_distance=10)
+# hypothesiser = DistanceHypothesiser(predictor, updater, measure=EuclideanBearingRangeRate(mapping=[1, 2, 3]), missed_distance=10)
 
 # 直接将[角度，径向距离，径向速度]加权后计算欧式距离，即扇形波门
-hypothesiser = DistanceHypothesiser(predictor, updater, measure=EuclideanWeighted(weighting=(0.5, 1, 1)), missed_distance=10)
+hypothesiser = DistanceHypothesiser(predictor, updater, measure=EuclideanWeighted(weighting=(0, 2, 1, 1.5)), missed_distance=5)
 
 data_associator = GlobalNearestNeighbour(hypothesiser)
+
+# 创建删除器
+from stonesoup.deleter.error import CovarianceBasedDeleter
+
+deleter = CovarianceBasedDeleter(covar_trace_thresh=4)
+
+# 创建启动器
+from stonesoup.types.state import GaussianState
+from stonesoup.initiator.simple import MultiMeasurementInitiator
+
+initiator = MultiMeasurementInitiator(
+    prior_state=GaussianState([[0], [0], [0], [0], [0], [0]], np.diag([1, 0.5, 1, 0.5, 1, 0.5])),
+    measurement_model=measurement_model,
+    deleter=deleter,
+    data_associator=data_associator,
+    updater=updater,
+    min_points=5,
+)
 
 
 # %%
 # 初始化tracker
 from stonesoup.types.state import GaussianState
-from stonesoup.types.track import Track
 
-tracks = [Track([GaussianState(truth[0].state_vector, np.diag([1, 0.1, 2, 0.2, 0, 0]) ** 2, timestamp=start_time)]) for truth in truths]
+tracks, all_tracks = set(), set()
 
-# 全局最近邻跟踪
 for n, measurements in enumerate(all_measurements):
     # Calculate all hypothesis pairs and associate the elements in the best subset to the tracks.
     hypotheses = data_associator.associate(tracks, measurements, timesteps[n])
+    associated_measurements = set()
     for track in tracks:
         hypothesis = hypotheses[track]
         if hypothesis.measurement:
-            print(f"{timesteps[n]} {hypothesis.distance}")
             post = updater.update(hypothesis)
             track.append(post)
-        else:  # 匹配失败时，使用预测值作为新的状态向量
-            prediction = hypothesis.prediction
-            prediction.state_vector[[1, 3, 5]] /= 2
+            associated_measurements.add(hypothesis.measurement)
+        else:  # When data associator says no detections are good enough, we'll keep the prediction
             track.append(hypothesis.prediction)
-            print(f"{ timesteps[n]} no detection, {hypothesis.prediction.state_vector}")
+
+    # Carry out deletion and initiation
+    tracks -= deleter.delete_tracks(tracks)
+    possiable_measurements = {i for i in (measurements - associated_measurements) if abs(i.state_vector[3]) > 0.02}
+    tracks |= initiator.initiate(possiable_measurements, timesteps[n])
+    all_tracks |= tracks
 # %%
 # 绘制跟踪结果
+from stonesoup.plotter import AnimatedPlotterly
+
 plotter = AnimatedPlotterly(timesteps, tail_length=0.2)
 plotter.plot_ground_truths(truths, [0, 2])
 plotter.plot_measurements(all_measurements, [0, 2])

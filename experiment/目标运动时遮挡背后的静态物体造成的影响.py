@@ -4,7 +4,7 @@ import sys
 sys.path.append("../")
 
 import numpy as np
-from scipy.fft import fftshift, fft, fft2
+from scipy.fft import fftshift, fft, fft2, ifft2, ifft
 import scipy.constants
 import scipy.io
 from sklearn.cluster import DBSCAN
@@ -44,10 +44,10 @@ def loadmat(file_name):
     del file
 
 
-# loadmat("../data/AT24G_RecordedData_切向往复运动以反复遮挡远处角铁.mat")
-loadmat("../data/AT24G_RecordedData_2m处静坐.mat")
-# loadmat("../data/AT24G_RecordedData 2024-10-30 10-57-59.mat")
-# loadmat("../data/AT24G_RecordedData 2024-11-04 16-31-21.mat")
+# loadmat("../data/AT24G_RecordedData_切向往复运动以反复遮挡远处角反.mat")
+# loadmat("../data/AT24G_RecordedData_静坐+手臂遮挡角反.mat")
+loadmat("../data/AT24G_RecordedData 2024-11-20 17-12-26.mat")
+
 
 numTrain = (3, 4)
 numGuard = (2, 4)
@@ -120,12 +120,12 @@ dh.draw_2d_spectrumlist(ampSpec2DList[::1, 0, :, :], title="幅度谱").show()
 
 # %%
 """ 绘制信噪比 """
-dh.draw_2d_spectrumlist(snrList[::1], title="信噪比").show()
+# dh.draw_2d_spectrumlist(snrList[::1], title="信噪比").show()
 
 # %%
 """ 提取角铁的信号 """
-idxReflector = (3, 0)  # 角铁的信号在RDM中的坐标，观察RDM时可以看到
-idxHuman = (2, 0)
+idxReflector = (14, 0)  # 角铁的信号在RDM中的坐标，观察RDM时可以看到
+idxHuman = (1, 0)
 
 
 signal2dfft_reflector = rdm[:, :, idxReflector[0], idxReflector[1]].transpose(1, 0)
@@ -150,15 +150,6 @@ phaseDiff_human = (phase_human[0] - phase_human[1] + np.pi) % (2 * np.pi) - np.p
 
 
 go.Figure(
-    data=[go.Scatter(y=(amp_reflector[0]), name="Rx0"), go.Scatter(y=(amp_reflector[1]), name="Rx1")],
-    layout=go.Layout(title="角铁信号的幅度变化"),
-).show()
-go.Figure(
-    data=[go.Scatter(y=(phase_reflector[0]), name="Rx0"), go.Scatter(y=(phase_reflector[1]), name="Rx1")],
-    layout=go.Layout(title="角铁信号的相位变化"),
-).show()
-
-go.Figure(
     data=[
         go.Scatter3d(
             x=np.arange(len(signal2dfft_reflector[0])),
@@ -166,22 +157,38 @@ go.Figure(
             z=np.imag(signal2dfft_reflector[0]),
             mode="lines+markers",
             marker=dict(size=3),
+            name="静态杂波",
         ),
         go.Scatter3d(
-            x=np.arange(len(signal2dfft_reflector[1])),
-            y=np.real(signal2dfft_reflector[1]),
-            z=np.imag(signal2dfft_reflector[1]),
+            x=np.arange(len(signal2dfft_human[1])),
+            y=np.real(signal2dfft_human[1]),
+            z=np.imag(signal2dfft_human[1]),
             mode="lines+markers",
             marker=dict(size=3),
+            name="人体",
         ),
     ],
     layout=go.Layout(
-        title="角铁信号复数域",
+        title="目标信号2DFFT复数域",
         scene=dict(
             aspectmode="manual", aspectratio=dict(x=5, y=1, z=1), xaxis=dict(title="Index"), yaxis=dict(title="Real Part"), zaxis=dict(title="Imaginary Part")
         ),
     ),
 ).show()
+
+
+go.Figure(
+    data=[go.Scatter(y=(amp_reflector[0]), name="静态反射体"), go.Scatter(y=(amp_human[1]), name="人体")],
+    layout=go.Layout(title="目标信号的幅度变化"),
+).show()
+
+
+go.Figure(
+    data=[go.Scatter(y=(phase_reflector[0]), name="静态反射体"), go.Scatter(y=(phase_human[0]), name="人体")],
+    layout=go.Layout(title="目标解缠绕相位变化"),
+).show()
+
+
 go.Figure(
     data=[go.Scatter(y=(phaseDiff_reflector))],
     layout=go.Layout(title="角铁信号两通道的相位差", yaxis_range=[-np.pi, np.pi]),
@@ -196,13 +203,35 @@ def getPhaseDiffAbs(phase, amp, windowSize):
     ret = np.array([np.sum(absdd[i : i + windowSize]) for i in range(len(absdd) - windowSize)])
     return ret
 
+windwos_size = 10
 
-a = getPhaseDiffAbs(phase_reflector[0], amp_reflector[0], 40)
-b = getPhaseDiffAbs(phase_human[0], amp_human[0], 40)
+a = getPhaseDiffAbs(phase_reflector[0], amp_reflector[0], windwos_size)
+b = getPhaseDiffAbs(phase_human[0], amp_human[0], windwos_size)
 
 go.Figure(
-    data=[go.Scatter(y=a, name="Rx0"), go.Scatter(y=b, name="Rx1")],
-    layout=go.Layout(title="xx"),
+    data=[go.Scatter(y=a, name="角反"), go.Scatter(y=b, name="人体")],
+    layout=go.Layout(title=f"相位变化累加（标量）   窗口长度：{windwos_size}帧"),
 ).show()
 
+# %%
+
+idx = 40
+
+_rdm = rdm[idx][0]
+_raw = ifft2(_rdm)
+_1dfft = ifft(_rdm, axis=-1)
+
+
+idxhuman = 2
+idxReflector = 10
+
+phase_human = np.unwrap(np.angle(_1dfft[idxhuman]))
+
+phase_reflector = np.unwrap(np.angle(_1dfft[idxReflector]))
+
+
+go.Figure(
+    data=[go.Scatter(y=(phase_human), name="人体"), go.Scatter(y=(phase_reflector), name="角铁")],
+    layout=go.Layout(title="相位变化"),
+).show()
 # %%
