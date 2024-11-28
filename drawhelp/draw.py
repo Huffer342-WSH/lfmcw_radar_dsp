@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import filedialog
 from tqdm import tqdm
 
+
 def draw_spectrum(spec, x=None, y=None, title: str = "default"):
     if x is None:
         x = np.arange(spec.shape[-1])
@@ -260,55 +261,3 @@ def draw_complex_Scatter3d(complex, title: str = "未命名"):
         title=title,
     )
     return fig
-
-
-def save_plotly_animation_as_video(fig: go.Figure, fps=30):
-    """
-    将Plotly的动画保存为视频文件，并使用tkinter选择保存位置，显示保存图片进度条。
-
-    参数:
-    fig (go.Figure): 包含动画的 Plotly 图形对象。
-    fps (int): 视频的帧率 (frames per second)，默认为30帧每秒。
-    """
-
-    def save_frame(fig: go.Figure, frame, frame_index, temp_dir):
-        """保存单个帧为图片"""
-        fig.update(data=frame.data)
-        fig.write_image(f"{temp_dir}/frame_{frame_index}.png")
-
-    # 使用 tkinter 打开文件对话框来选择保存位置
-    root = tk.Tk()
-    root.withdraw()  # 隐藏主窗口
-    output_path = filedialog.asksaveasfilename(defaultextension=".mp4", filetypes=[("MP4 files", "*.mp4")], title="Choose location to save the video")
-
-    if not output_path:  # 如果用户取消了操作，返回
-        print("No file selected.")
-        return
-
-    # 临时保存layout
-    layout = fig.layout
-    fig.update_layout(dict1=dict(updatemenus=[], sliders=[]), overwrite=True)
-
-    # 创建临时目录保存每一帧图片
-    temp_dir = "frames"
-    if not os.path.exists(temp_dir):
-        os.makedirs(temp_dir)
-    print("Saving pictures...")
-
-    # 使用tqdm显示进度条，保存每一帧
-    Parallel(n_jobs=-1)(delayed(save_frame)(fig, fig.frames[i], i, temp_dir) for i in tqdm(range(len(fig.frames)), desc="Saving pictures"))
-
-    # 获取所有图片的路径，按顺序生成视频
-    image_files = [f"{temp_dir}/frame_{i}.png" for i in range(len(fig.frames))]
-    clip = ImageSequenceClip(image_files, fps=fps)
-
-    # 保存视频
-    clip.write_videofile(output_path, codec="libx264")
-
-    # 清理临时文件
-    for image_file in image_files:
-        os.remove(image_file)
-    os.rmdir(temp_dir)
-
-    # 恢复原始layout
-    fig.layout = layout
