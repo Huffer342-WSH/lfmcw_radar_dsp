@@ -8,6 +8,9 @@ class GaussianState:
         self.covar = covar
         self.timestamp = timestamp
 
+    def __repr__(self):
+        return f"state_vector: \r\n{self.state_vector}\r\n  covar: \r\n{self.covar}\r\n   timestamp: \r\n{self.timestamp}"
+
 
 class GaussianMeasurementPrediction:
     def __init__(self, state_vector, covar, cross_covar, timestamp):
@@ -66,9 +69,9 @@ class KalmanUpdater:
 
         rr = self.measurement_model.covar()
 
-        k = ph @ np.linalg.inv(s)
-        I_KH = np.identity(k.shape[0]) - k @ hh
-        p_post = I_KH @ p_pred @ I_KH.T + k @ rr @ k.T
+        k = ph @ np.linalg.inv(s)  # 6x4
+        I_KH = np.identity(k.shape[0]) - k @ hh  # 6x6 - 6x4 * 4x6
+        p_post = I_KH @ p_pred @ I_KH.T + k @ rr @ k.T  # 6x6 * 6x6 * 6x6 + 6x4 *  4x4 * 4x6
 
         x_post = x_pred + k @ (z - z_pred)
         return GaussianState(x_post, p_post, hypothesis.prediction.timestamp)

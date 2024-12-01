@@ -1,27 +1,22 @@
 # %%
+__all__ = ["plotly_fig_to_video", "plotly_fig_to_video_multiprocess", "plotly_fig_to_video_joblib"]
+
 import plotly.graph_objects as go
 import plotly.io as pio
 import ffmpeg
-import os
-import psutil
 
-from multiprocessing import Queue, Process
-from multiprocessing.shared_memory import SharedMemory
-import pickle
 
-from threading import Thread, Event
 import tqdm
-import heapq
+
 import __main__
-
-
-__all__ = ["plotly_fig_to_video", "plotly_fig_to_video_multiprocess"]
 
 
 def get_unique_filename(filepath):
     """
     检查文件是否存在，如果存在，给文件名加上后缀(1), (2)...直到找到一个不存在的文件名。
     """
+    import os
+
     base, ext = os.path.splitext(filepath)
     counter = 1
     new_filepath = filepath
@@ -33,7 +28,7 @@ def get_unique_filename(filepath):
 import time
 
 
-def __generate_frame(fig, frames, indices, queue: Queue):
+def __generate_frame(fig, frames, indices, queue):
     """
     生成单个帧的图像并将其通过队列传递给主进程。
     """
@@ -78,6 +73,14 @@ def plotly_fig_to_video_multiprocess(fig: go.Figure, output_path: str, fps: int 
     """
     print("请使用plotly_fig_to_video_joblib")
     return
+
+    import psutil
+    from multiprocessing import Queue, Process
+    from multiprocessing.shared_memory import SharedMemory
+    from threading import Thread, Event
+    import pickle
+    import heapq
+
     def store_farme_to_heap(heap, queue, total_frames):
         count = 0
         while count < total_frames:
@@ -205,6 +208,21 @@ def __frame_to_image__for_plotly_fig_to_video_joblib(fig, frame):
 
 
 def plotly_fig_to_video_joblib(fig: go.Figure, output_path: str, fps: int = 30, width: int = None, height: int = None):
+    """将plotly.graph_objects.Figure 对象编码成视频
+
+    Parameters
+    ----------
+    fig : go.Figure
+        待编码的 plotly.graph_objects.Figure 对象，带有 frames 属性
+    output_path : str
+        视频保存路径
+    fps : int, optional
+        帧数, by default 30
+    width : int, optional
+        宽度，会覆盖fig.layout.width，假如都没有设置默认为1080
+    height : int, optional
+        高度，会覆盖fig.layout.height，假如都没有设置默认为607
+    """
     import joblib
 
     if not getattr(__main__, "__file__", None):
@@ -236,6 +254,7 @@ def plotly_fig_to_video_joblib(fig: go.Figure, output_path: str, fps: int = 30, 
 
     # 按照顺序写入所有帧数据到 ffmpeg
     for img_data in tqdm.tqdm(frame_images, desc="Encoding Video   "):
+        # Start the ffmpeg process for video encoding
         process.stdin.write(img_data)
 
     # 关闭stdin，告诉ffmpeg输入已经完成
