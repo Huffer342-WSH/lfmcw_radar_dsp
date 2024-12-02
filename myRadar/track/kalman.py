@@ -21,7 +21,11 @@ class GaussianMeasurementPrediction:
 
 
 class Hypothesis:
-    def __init__(self, prediction, measurement: np.ndarray, measurement_prediction=None):
+
+    def __init__(
+        self, prior_state: GaussianState, prediction: GaussianState, measurement: np.ndarray, measurement_prediction: GaussianMeasurementPrediction = None
+    ):
+        self.prior_state = prior_state
         self.prediction = prediction
         self.measurement = measurement
         self.measurement_prediction = measurement_prediction

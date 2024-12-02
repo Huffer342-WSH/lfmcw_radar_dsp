@@ -28,23 +28,45 @@ sys.path.append("../")
 import numpy as np
 import scipy.io
 from datetime import datetime, timedelta
+from stonesoup.plotter import AnimatedPlotterly
+import scipy.interpolate
 
 # %%
 # 导入轨迹
-timeScale = 15
 posScale = 10
 stride = 10
-file_list = ["../data/mouse_trajectory_2024_09_13_17_22_54.mat", "../data/mouse_trajectory_2024_09_13_17_23_04.mat"]
+num_steps = 200
+axisTime = np.linspace(0, 60, num_steps, endpoint=False)
 
-targetsInfo = []
+file_list = [
+    "../data/mouse_trajectory_2024_09_13_17_22_54.mat",
+    "../data/mouse_trajectory_2024_09_13_17_23_04.mat",
+    "../data/mouse_trajectory_2024_12_01_23_48_29.mat",
+]
+
+targets_info = []
 for file in file_list:
     trajTemp = scipy.io.loadmat(file)
-    targetsInfo.append(dict(rsc=1, times=trajTemp["timestamps"].ravel()[::stride] * timeScale, pos=trajTemp["positions"][::stride] * posScale))
-num_steps = min([len(i["times"]) for i in targetsInfo])
+    targets_info.append([trajTemp["timestamps"].reshape(-1), trajTemp["positions"]])
+
+
+targets_position = []
+for times, pos in targets_info:
+    trajTemp = scipy.io.loadmat(file)
+    interp_pos = scipy.interpolate.interp1d(
+        times * (np.max(axisTime) / np.max(times)),
+        pos,
+        axis=0,
+        kind="quadratic",
+        bounds_error=False,
+        fill_value=(trajTemp["positions"][0], trajTemp["positions"][-1]),
+    )
+    targets_position.append(interp_pos(axisTime) * posScale)
+
 
 # 设置参数
-clutter_num_max = 3
-velocity_noise_coef = 1
+clutter_num_max = 1
+velocity_noise_coef = 1.5
 meas_noise_covar = np.diag([0, 5 / 180 * np.pi, 0.2, 0.01]) ** 2
 missed_distance = 10
 
@@ -76,9 +98,7 @@ measurement_model = CartesianToElevationBearingRangeRate(
 # 生成时间戳
 start_time = datetime.now().replace(microsecond=0)
 
-timestamps = np.array(
-    [start_time + timedelta(seconds=t) for t in np.linspace(targetsInfo[0]["times"][0], targetsInfo[0]["times"][-1], len(targetsInfo[0]["times"]))]
-)
+timestamps = np.array([start_time + timedelta(seconds=t) for t in axisTime])
 
 # 生成真值轨迹
 # 真值是状态向量的格式[x,y,vx,vy]，笛卡尔坐标系
@@ -86,9 +106,9 @@ from stonesoup.types.groundtruth import GroundTruthPath, GroundTruthState
 from ordered_set import OrderedSet
 
 truths = OrderedSet()
-for i, target in enumerate(targetsInfo):
+for i, pos in enumerate(targets_position):
     stateVectors = np.zeros((num_steps, 6))
-    stateVectors[:num_steps, :3] = target["pos"][:num_steps, :3]
+    stateVectors[:num_steps, :3] = pos[:num_steps, :3]
     dt = np.array([t.total_seconds() for t in (timestamps[1:] - timestamps[:-1])]).reshape(-1, 1)
     stateVectors[:-1, 3:6] = (stateVectors[1:, 0:3] - stateVectors[:-1, 0:3]) / dt
     stateVectors = stateVectors[:-1, [0, 3, 1, 4, 2, 5]]
@@ -127,12 +147,12 @@ for k in range(len(stateVectors)):
 
 # %%
 # 绘图
-from stonesoup.plotter import AnimatedPlotterly
 
-plotter = AnimatedPlotterly(timestamps, tail_length=0.2)
-plotter.plot_ground_truths(truths, [0, 2])
-plotter.plot_measurements(all_measurements, [0, 2])
-plotter.fig
+
+# plotter = AnimatedPlotterly(timestamps, tail_length=0.2)
+# plotter.plot_ground_truths(truths, [0, 2])
+# plotter.plot_measurements(all_measurements, [0, 2])
+# plotter.fig
 
 
 # %%
@@ -217,89 +237,349 @@ for n, measurements in enumerate(all_measurements):
     all_tracks |= tracks
 # %%
 # 绘制跟踪结果
-from stonesoup.plotter import AnimatedPlotterly
 
-plotter = AnimatedPlotterly(timestamps, tail_length=0.2)
-plotter.plot_ground_truths(truths, [0, 2])
-plotter.plot_measurements(all_measurements, [0, 2])
-plotter.plot_tracks(tracks, [0, 2])
-plotter.fig
+
+# plotter = AnimatedPlotterly(timestamps, tail_length=0.2)
+# plotter.plot_ground_truths(truths, [0, 2])
+# plotter.plot_measurements(all_measurements, [0, 2])
+# plotter.plot_tracks(tracks, [0, 2])
+# plotter.fig
+
 
 # %%
-import myRadar.track.kalman as mk
-import myRadar.track.models as mm
-from stonesoup.types.array import StateVector, StateVectors
-
-ekf_predictor = mk.KalmanPredictor(mm.TransitionModel(velocity_noise_coef))
-ekf_updater = mk.KalmanUpdater(mm.MeasurementModel(meas_noise_covar))
-
-trajectorys = [[], []]
-# 手动实现数据关联
-tracked_targets = []  # 被跟踪的目标
-unConfirmed_targets = []  # 航迹起始阶段的目标
-
-tracked_targets.append(mk.GaussianState(state_vector=truths[0][0].state_vector, covar=np.diag([1, 0.5, 1, 0.5, 1, 0.5]), timestamp=0))
-tracked_targets.append(mk.GaussianState(state_vector=truths[1][0].state_vector, covar=np.diag([1, 0.5, 1, 0.5, 1, 0.5]), timestamp=0))
-
+# 自己实现的GNN目标跟踪
 from scipy.optimize import linear_sum_assignment
 
-for n, measurements in enumerate(all_measurements[:]):
-    measurements = list(measurements)
-    timestamp = (timestamps[n] - timestamps[0]).total_seconds()
+import myRadar.track.kalman as mk
+import myRadar.track.models as mm
+from myRadar.base import Printable
+from stonesoup.types.array import StateVector, StateVectors
 
-    # tracker预测，得到预测的状态向量，测量值
-    prediction = [ekf_predictor.predict(i, timestamp) for i in tracked_targets]
-    predicted_measurements = [ekf_updater.predict_measurement(i) for i in prediction]
 
-    row_map = []  # 距离矩阵的列下标 ---> tracked_targets 的下标
-    distance_matrix = []  # 生成距离矩阵
-    distance_matrix_row_cnt = 0
-    for i in range(len(predicted_measurements)):
-        a = predicted_measurements[i].state_vector
-        allinf_flag = True
-        row = np.empty(len(measurements))
-        for j, measurement in enumerate(measurements):
-            b = measurement.state_vector
-            dis = np.linalg.norm((a - b) * (np.array([0, 0.5, 1, 1.5]).reshape(-1, 1)))
-            if dis < missed_distance:
-                allinf_flag = False
+class LifeCycle(Printable):
+    def __init__(self, score):
+        self.score = score
+        self.unassociated_time = 0  #  关联失败的时间
+        self.deducted_score = 0
+        self.measurements = []
+        self.post_measurements = []
+        self.mese = 0
+
+
+class myTracker:
+    next_uuid = 0
+
+    def __init__(self, measurement):
+        self.uuid = myTracker.next_uuid
+        myTracker.next_uuid += 1
+
+        theta, phi, rho, rho_rate = measurement
+        x = rho * np.cos(theta) * np.cos(phi)
+        y = rho * np.cos(theta) * np.sin(phi)
+        z = rho * np.sin(theta)
+        vx = rho_rate * np.cos(theta) * np.cos(phi)
+        vy = rho_rate * np.cos(theta) * np.sin(phi)
+        vz = rho_rate * np.sin(theta)
+        state = mk.GaussianState(state_vector=np.array([x, vx, y, vy, z, vz]).reshape(-1, 1), covar=np.diag([1, 0.5, 1, 0.5, 1, 0.5]) ** 2, timestamp=timestamp)
+
+        self.state = state
+        self.life_cycle = LifeCycle(Initiator.initial_score)
+        self.life_cycle.measurements.append(measurement)
+        self.life_cycle.post_measurements.append(measurement)
+
+
+class Associator(Printable):
+    def __init__(self, predictor: mk.KalmanPredictor, updater: mk.KalmanUpdater):
+        self.predictor = predictor
+        self.updater = updater
+
+    def associate(self, targets, measurements, timestamp, missed_distance):
+
+        prediction = [self.predictor.predict(i.state, timestamp) for i in targets]
+        predicted_measurements = [self.updater.predict_measurement(i) for i in prediction]
+
+        # 为每一个被跟踪的目标生成假设，为关联成功的目标的假设的measurement是None
+        hypotheses = [
+            mk.Hypothesis(prior_state=tar.state, prediction=ps, measurement=None, measurement_prediction=pm)
+            for tar, ps, pm in zip(targets, prediction, predicted_measurements)
+        ]
+        row_map = []  # 距离矩阵的列下标 ---> tracked_targets 的下标
+        distance_matrix = []  # 生成距离矩阵
+        for i in range(len(predicted_measurements)):
+            a = predicted_measurements[i].state_vector
+            allinf_flag = True
+            row = np.empty(len(measurements))
+            for j, measurement in enumerate(measurements):
+                b = measurement
+                dis = np.linalg.norm((a - b).reshape(-1, 1) * (np.array([0, 2, 1, 1.5])))
+                if dis < missed_distance:
+                    allinf_flag = False
+                else:
+                    dis = np.inf
+                row[j] = dis
+            if not allinf_flag:
+                distance_matrix.append(row)
+                row_map.append(i)
+        distance_matrix = np.array(distance_matrix)
+        self_matrix = np.full((distance_matrix.shape[0], distance_matrix.shape[0]), np.inf)
+        np.fill_diagonal(self_matrix, missed_distance)
+        distance_matrix = np.column_stack((distance_matrix, self_matrix))
+        print(f"距离矩阵:\n{distance_matrix}\n")
+
+        # 最小和指派
+        row4col, col4row = linear_sum_assignment(distance_matrix, 0)
+
+        # 给每一个假设分配测量值
+        for i, j in zip(row4col, col4row):
+            if distance_matrix[i, j] != np.inf and j < len(measurements):
+                hypotheses[row_map[i]].measurement = measurements[j]
+                print(f"目标 {targets[row_map[i]].uuid}:\n {targets[row_map[i]].state.state_vector} \n  关联测量 {measurements[j]}")
+        unassociated_measurements = [m for i, m in enumerate(measurements) if i not in col4row]
+
+        return hypotheses, unassociated_measurements
+
+
+class Initiator(Printable):
+    max_score = 3000
+    initial_score = 1000
+
+    def __init__(
+        self,
+        predictor: mk.KalmanPredictor,
+        updater: mk.KalmanUpdater,
+        associator: Associator,
+        unassociated_time=2.0,  # 目标关联失败超时时间
+        keep_motion_time=2.0,  # 目标是连续运动时，多少时间关联成功
+        keep_static_time=8.0,  # 目标是静止时，多少时间关联成功
+        speed_threshold=0.1,  # 速度阈值
+        missed_distance=5.0,
+    ):
+        self.predictor = predictor
+        self.updater = updater
+        self.associator = associator
+
+        score = Initiator.max_score - Initiator.initial_score
+        self.unassociated_time = unassociated_time
+        self.speed_threshold = speed_threshold
+        self.unassociated_score = int(-Initiator.initial_score / unassociated_time)
+        self.motion_score = int(score / keep_motion_time)
+        self.static_score = int(score / keep_static_time)
+        self.missed_distance = missed_distance
+
+    def updateLifeCycle(self, life_cycle: LifeCycle, hypothesis: mk.Hypothesis, post: mk.GaussianState):
+        score = 0
+        dt = hypothesis.prediction.timestamp - hypothesis.prior_state.timestamp
+        if hypothesis.measurement is None:
+            # 关联失败
+            if life_cycle.unassociated_time > self.unassociated_time:
+                score -= int(life_cycle.score) // 2
+            score += self.unassociated_score * dt
+            life_cycle.unassociated_time += dt
+            life_cycle.measurements.append(life_cycle.measurements[-1])
+        else:
+            score -= life_cycle.unassociated_time * self.unassociated_score / 2
+            speed = abs(hypothesis.measurement[3])
+            if speed > self.speed_threshold:
+                score += self.motion_score * dt
             else:
-                dis = np.inf
-            row[j] = dis
-        if not allinf_flag:
-            distance_matrix.append(row)
-            row_map.append(i)
-    distance_matrix = np.array(distance_matrix)
-    self_matrix = np.full((distance_matrix.shape[0], distance_matrix.shape[0]), np.inf)
-    np.fill_diagonal(self_matrix, missed_distance)
-    distance_matrix = np.column_stack((distance_matrix, self_matrix))
+                score += self.static_score * dt
+            life_cycle.unassociated_time = 0
+            life_cycle.measurements.append(hypothesis.measurement)
+        life_cycle.score += int(score)
+        life_cycle.post_measurements.append(self.updater.measurement_model.function(post.state_vector))
+        if len(life_cycle.measurements) > int(3 / dt):
+            del life_cycle.measurements[0]
+            del life_cycle.post_measurements[0]
 
-    # 最小和指派
-    row4col, col4row = linear_sum_assignment(distance_matrix, 0)
+        # 计算测量值误差方差
+        a = np.array(life_cycle.measurements)
+        b = np.array(life_cycle.post_measurements)
+        life_cycle.mese = (np.linalg.norm(a - b, axis=0) / len(a)).reshape(-1)
+        if np.sum(life_cycle.mese) > 1:
+            life_cycle.score = -1
 
-    # 为每一个被跟踪的目标生成假设，为关联成功的目标的假设的measurement是None
-    hypotheses = [mk.Hypothesis(prediction=ps, measurement=None, measurement_prediction=pm) for ps, pm in zip(prediction, predicted_measurements)]
-    for i, j in zip(row4col, col4row):
-        if distance_matrix[i, j] != np.inf and j < len(measurements):
-            hypotheses[row_map[i]].measurement = measurements[j].state_vector
+    def initiate(self, confirmed_targets, unconfirmed_targets: list, measurements, timestamp):
+
+        # 关联
+        hypotheses, unassociated_measurements = self.associator.associate(unconfirmed_targets, measurements, timestamp, self.missed_distance)
+
+        # 更新
+        for target, hypothesis in zip(unconfirmed_targets, hypotheses):
+            target: myTracker
+            hypothesis: mk.Hypothesis
+            # 滤波
+            if hypothesis.measurement is None:
+                target.state = hypothesis.prediction
+            else:
+                target.state = self.updater.update(hypothesis)
+            # 更新生命周期
+            self.updateLifeCycle(target.life_cycle, hypothesis, target.state)
+
+        # 删除无效目标，添加确认目标
+        for t in reversed(unconfirmed_targets):
+            if t.life_cycle.score < 0:
+                unconfirmed_targets.remove(t)
+                print(f"删除起始阶段目标 {t.uuid}")
+            elif t.life_cycle.score > Initiator.max_score:
+                print(f"添加到跟踪列表 {t.uuid}")
+                confirmed_targets.append(t)
+                unconfirmed_targets.remove(t)
+
+        ### 仍然没有被关联的测量值，用于创建新目标
+        for measurement in unassociated_measurements:
+            theta, phi, rho, rho_rate = measurement
+            # 速度慢的测量值不用于创建新目标
+            if np.abs(rho_rate) < 0.1:
+                continue
+            unconfirmed_targets.append(myTracker(measurement))
+
+
+class Deleter(Printable):
+    max_score = 5000
+
+    def __init__(
+        self,
+        updater: mk.KalmanUpdater,
+        unassociated_time=10.0,  # 目标关联失败超时时间
+        missed_probability=0.2,  # 目标丢失的概率
+    ):
+        self.updater = updater
+
+        self.unassociated_time = unassociated_time
+        self.unassociated_score = int(-Deleter.max_score / unassociated_time)
+        self.missed_probability = missed_probability
+
+    def updateLifeCycle(self, life_cycle: LifeCycle, hypothesis: mk.Hypothesis, post: mk.GaussianState):
+        score = 0
+        dt = hypothesis.prediction.timestamp - hypothesis.prior_state.timestamp
+        if hypothesis.measurement is None:
+            # 关联失败
+            life_cycle.unassociated_time += dt
+            score += self.unassociated_score * dt
+            life_cycle.measurements.append(life_cycle.measurements[-1])
+        else:
+            # 返回分数
+            score += min(life_cycle.unassociated_time, dt / self.missed_probability) * self.unassociated_score
+            score -= self.unassociated_score * dt
+            life_cycle.unassociated_time = 0
+            life_cycle.measurements.append(hypothesis.measurement)
+
+        life_cycle.score += int(score)
+
+        life_cycle.post_measurements.append(self.updater.measurement_model.function(post.state_vector))
+        if len(life_cycle.measurements) > int(3 / dt):
+            del life_cycle.measurements[0]
+            del life_cycle.post_measurements[0]
+            # 计算测量值误差方差
+
+        a = np.array(life_cycle.measurements)
+        b = np.array(life_cycle.post_measurements)
+        life_cycle.mese = (np.linalg.norm(a - b, axis=0) / len(a)).reshape(-1)
+
+        if np.sum(life_cycle.mese) > 1:
+            life_cycle.score = life_cycle.score / 4
+
+        angle = np.arctan2(post.state_vector[2], post.state_vector[0])
+        r = np.linalg.norm([post.state_vector[0], post.state_vector[2]])
+        if (angle > np.pi / 3) or (angle < -np.pi / 3):
+            life_cycle.score = -1
+        if r > 15:
+            life_cycle.score = -1
+
+        if life_cycle.score > Deleter.max_score:
+            life_cycle.score = Deleter.max_score
+
+    def delete(self, targets: list, hypotheses):
+        for target, hypothesis in zip(targets, hypotheses):
+            self.updateLifeCycle(target.life_cycle, hypothesis, target.state)
+        for target in reversed(targets):
+            if target.life_cycle.score < 0:
+                targets.remove(target)
+
+
+def track(associator, deleter, initiator, tracked_targets, unconfirmed_targets, measurements, missed_distance, timestamp):
+    # 数据关联，得到假设和未关联的测量
+    hypotheses, unassociated_measurements = associator.associate(tracked_targets, measurements, timestamp, missed_distance)
 
     # 按照假设更新每一个目标
-    for i, hypothesis in enumerate(hypotheses):
-        if hypothesis.measurement is not None:
-            tracked_targets[i] = ekf_updater.update(hypothesis)
+    for target, hypothesis in zip(tracked_targets, hypotheses):
+        if hypothesis.measurement is None:
+            target.state = hypothesis.prediction
         else:
-            tracked_targets[i] = hypothesis.prediction
+            target.state = ekf_updater.update(hypothesis)
 
-    # 保存轨迹，用于绘图
-    for i, target in enumerate(tracked_targets):
-        trajectorys[i].append(GaussianState(state_vector=target.state_vector, covar=target.covar, timestamp=timestamps[n]))
+    # 删除无效目标
+    deleter.delete(tracked_targets, hypotheses)
+
+    # 航迹起始
+    initiator.initiate(tracked_targets, unconfirmed_targets, unassociated_measurements, timestamp)
+
+    for i in tracked_targets:
+        print(f"跟踪目标 {i.uuid} 误差 {i.life_cycle.mese} 分数 {i.life_cycle.score}")
+    for i in unconfirmed_targets:
+        print(f"航迹起始 {i.uuid} 误差 {i.life_cycle.mese} 分数 {i.life_cycle.score}")
 
 
 # %%
-plotter = AnimatedPlotterly(timestamps, tail_length=0.2)
+
+# 创建工作类  预测、更新、关联、起始
+ekf_predictor = mk.KalmanPredictor(mm.TransitionModel(velocity_noise_coef))
+ekf_updater = mk.KalmanUpdater(mm.MeasurementModel(meas_noise_covar))
+associator = Associator(ekf_predictor, ekf_updater)
+_deleter = Deleter(updater=ekf_updater, unassociated_time=10.0, missed_probability=0.2)
+_initiator = Initiator(
+    predictor=ekf_predictor,
+    updater=ekf_updater,
+    associator=associator,
+    unassociated_time=2.0,
+    keep_motion_time=2.0,
+    keep_static_time=-10.0,
+    speed_threshold=0.1,
+    missed_distance=5,
+)
+
+#  轨迹
+trajectorys = dict()
+unconfirmed_trajectorys = dict()
+
+# 目标
+tracked_targets = []  # 被跟踪的目标
+unconfirmed_targets = []  # 航迹起始阶段的目标
+
+for n, measurements in enumerate(all_measurements[:]):
+    print(f"\r\n\r\n时间 {timestamps[n]}")
+    measurements = [m.state_vector.astype(np.float64) for m in measurements]
+    timestamp = (timestamps[n] - timestamps[0]).total_seconds()
+
+    # 跟踪
+    track(associator, _deleter, _initiator, tracked_targets, unconfirmed_targets, measurements, missed_distance, timestamp)
+
+    # 保存轨迹，用于绘图
+    for target in tracked_targets:
+        target: myTracker
+        uuid = target.uuid
+        if uuid in trajectorys.keys():
+            trajectorys[uuid].append(GaussianState(state_vector=target.state.state_vector, covar=target.state.covar, timestamp=timestamps[n]))
+        else:
+            trajectorys[uuid] = [GaussianState(state_vector=target.state.state_vector, covar=target.state.covar, timestamp=timestamps[n])]
+    for target in unconfirmed_targets:
+        target: myTracker
+        uuid = target.uuid
+        if uuid in unconfirmed_trajectorys.keys():
+            unconfirmed_trajectorys[uuid].append(GaussianState(state_vector=target.state.state_vector, covar=target.state.covar, timestamp=timestamps[n]))
+        else:
+            unconfirmed_trajectorys[uuid] = [GaussianState(state_vector=target.state.state_vector, covar=target.state.covar, timestamp=timestamps[n])]
+
+
+# %%
+plotter = AnimatedPlotterly(timestamps, tail_length=0.12)
 plotter.plot_ground_truths(truths, [0, 2])
 plotter.plot_measurements(all_measurements, [0, 2])
 plotter.plot_tracks(tracks, [0, 2], track_label="Stonesoup")
-plotter.plot_tracks(trajectorys, [0, 2], track_label="User")
+plotter.plot_tracks(trajectorys.values(), [0, 2], track_label="User-confirmed")
+plotter.plot_tracks(unconfirmed_trajectorys.values(), [0, 2], track_label="User-unconfirmed", marker=dict(symbol="x", size=8))
 plotter.fig
+# %%
+
+
 # %%
