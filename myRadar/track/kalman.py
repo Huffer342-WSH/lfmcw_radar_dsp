@@ -43,7 +43,7 @@ class KalmanPredictor:
     def predict(self, state: GaussianState, timestamp):
         x_prior = state.state_vector
         p_prior = state.covar
-        dt = timestamp - state.timestamp
+        dt = (timestamp - state.timestamp).total_seconds()
         ff = self.transition_model.matirx(dt)
         qq = self.transition_model.covar(dt)
         x_pred = self.transition_model.function(x_prior, dt)

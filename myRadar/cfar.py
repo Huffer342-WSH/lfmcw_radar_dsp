@@ -140,3 +140,24 @@ def cfar_1d(mat, numTrain, numGuard, threshold, type="mean"):
     coords = np.argwhere((mat / noise_level) > threshold)
 
     return coords[:, 1], noise_level.ravel()
+
+
+def cfar_result_filtering(cfar_indices, range0, range1, shape1, th, mapping=[0, 1, 2]):
+    if len(cfar_indices) == 0:
+        return cfar_indices
+    cfar = np.array(cfar_indices).astype(int)
+    r0 = cfar[:, mapping[0]]
+    mask_r0 = np.abs(r0[:, None] - r0) < range0
+    np.fill_diagonal(mask_r0, False)
+
+    r1 = cfar[:, mapping[1]].astype(int)
+    mask_r1 = np.abs((r1[:, None] - r1) % shape1) < range1
+    np.fill_diagonal(mask_r1, False)
+
+    mag = cfar[:, mapping[2]]
+    mask_mag = (mag[:, None] / mag) < th
+    np.fill_diagonal(mask_mag, False)
+
+    mask = np.sum(mask_r0 & mask_r1 & mask_mag, axis=1) == 0
+
+    return [item for item, m in zip(cfar_indices, mask) if m]

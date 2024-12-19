@@ -1,3 +1,5 @@
+import numpy as np
+
 class Printable:
     """
     A base class that provides a customizable __repr__ method for better object printing.
@@ -32,3 +34,25 @@ class Printable:
             full_repr = f"{full_repr[:max_total_length]}{truncated_marker}"
 
         return full_repr
+
+
+class BaseBasicData(np.ndarray):
+    attributes = []
+
+    def __new__(cls, *args):
+        if len(args) == 1 and isinstance(args[0], (np.ndarray, list, tuple)):
+            array = np.asarray(args[0], dtype=float)
+        else:
+            array = np.asarray(args, dtype=float)
+        if array.shape != (len(cls.attributes),):
+            raise ValueError(f"Input must have exactly {len(cls.attributes)} elements.")
+        obj = array.view(cls)
+        return obj
+
+    def __init__(self, *args):
+        for i, attr in enumerate(self.attributes):
+            setattr(self.__class__, attr, property(lambda self, i=i: self[i], lambda self, value, i=i: self.__setitem__(i, value)))
+
+    def __repr__(self):
+        values = ", ".join(f"{attr}={getattr(self, attr)}" for attr in self.attributes)
+        return f"\r\n{self.__class__.__name__}({values})"
