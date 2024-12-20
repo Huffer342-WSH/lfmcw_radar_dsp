@@ -19,6 +19,7 @@ from myRadar.base import BaseBasicData
 
 from myRadar.plot import genScatterPolar
 import myRadar.plot.draw as dh
+from itertools import chain
 
 
 import plotly.graph_objects as go
@@ -35,7 +36,6 @@ from scipy.optimize import linear_sum_assignment
 import myRadar.track.kalman as mk
 import myRadar.track.models as mm
 from myRadar.base import Printable
-from stonesoup.types.array import StateVector, StateVectors
 
 
 class LifeCycle(Printable):
@@ -51,16 +51,16 @@ class LifeCycle(Printable):
 class TrackedTarget:
     next_uuid = 0
 
-    def __init__(self, measurement, timestamp: datetime):
+    def __init__(self, measurement, init_covar, timestamp: datetime):
         TrackedTarget.next_uuid += 1
 
         self.uuid = TrackedTarget.next_uuid
-        self.state = self.__clac_init_state(measurement, timestamp)
+        self.state = self.__clac_init_state(measurement, init_covar, timestamp)
         self.life_cycle = LifeCycle(Initiator.initial_score)
         self.life_cycle.measurements.append(measurement)
         self.life_cycle.post_measurements.append(measurement)
 
-    def __clac_init_state(self, measurement, timestamp):
+    def __clac_init_state(self, measurement, init_covar, timestamp):
         theta, phi, rho, rho_rate = measurement
         x = rho * np.cos(theta) * np.cos(phi)
         y = rho * np.cos(theta) * np.sin(phi)
@@ -68,7 +68,7 @@ class TrackedTarget:
         vx = rho_rate * np.cos(theta) * np.cos(phi)
         vy = rho_rate * np.cos(theta) * np.sin(phi)
         vz = rho_rate * np.sin(theta)
-        state = mk.GaussianState(state_vector=np.array([x, vx, y, vy, z, vz]).reshape(-1, 1), covar=np.diag([1, 0.5, 1, 0.5, 1, 0.5]) ** 2, timestamp=timestamp)
+        state = mk.GaussianState(state_vector=np.array([x, vx, y, vy, z, vz]).reshape(-1, 1), covar=init_covar, timestamp=timestamp)
         return state
 
 
@@ -108,7 +108,6 @@ class Associator(Printable):
         self_matrix = np.full((distance_matrix.shape[0], distance_matrix.shape[0]), np.inf)
         np.fill_diagonal(self_matrix, missed_distance)
         distance_matrix = np.column_stack((distance_matrix, self_matrix))
-        print(f"距离矩阵:\n{distance_matrix}\n")
 
         # 最小和指派
         row4col, col4row = linear_sum_assignment(distance_matrix, 0)
@@ -117,7 +116,6 @@ class Associator(Printable):
         for i, j in zip(row4col, col4row):
             if distance_matrix[i, j] != np.inf and j < len(measurements):
                 hypotheses[row_map[i]].measurement = measurements[j]
-                print(f"目标 {targets[row_map[i]].uuid}:\n {targets[row_map[i]].state.state_vector} \n  关联测量 {measurements[j]}")
         unassociated_measurements = [m for i, m in enumerate(measurements) if i not in col4row]
 
         # 按照假设更新每一个目标
@@ -143,6 +141,7 @@ class Initiator(Printable):
         keep_static_time=8.0,  # 目标是静止时，多少时间关联成功
         speed_threshold=0.1,  # 速度阈值
         missed_distance=5.0,
+        init_covar: np.ndarray = np.diag([0.1, 0.1, 0.1, 0.1, 0.1, 0.1]) ** 2,
     ):
         self.predictor = predictor
         self.updater = updater
@@ -155,6 +154,7 @@ class Initiator(Printable):
         self.motion_score = int(score / keep_motion_time)
         self.static_score = int(score / keep_static_time)
         self.missed_distance = missed_distance
+        self.init_covar = init_covar
 
     def updateLifeCycle(self, life_cycle: LifeCycle, hypothesis: mk.Hypothesis, post: mk.GaussianState):
         score = 0
@@ -221,7 +221,7 @@ class Initiator(Printable):
             # 速度慢的测量值不用于创建新目标
             if np.abs(rho_rate) < 0.1:
                 continue
-            unconfirmed_targets.append(TrackedTarget(measurement, timestamp=timestamp))
+            unconfirmed_targets.append(TrackedTarget(measurement, init_covar=self.init_covar, timestamp=timestamp))
 
 
 class Deleter(Printable):
@@ -232,12 +232,16 @@ class Deleter(Printable):
         updater: mk.KalmanUpdater,
         unassociated_time=10.0,  # 目标关联失败超时时间
         missed_probability=0.2,  # 目标丢失的概率
+        fov=np.array([-np.pi / 3, np.pi / 3]),  # 视角
+        radius_range=np.array([0.2, 100]),  # 半径范围
     ):
         self.updater = updater
 
         self.unassociated_time = unassociated_time
         self.unassociated_score = int(-Deleter.max_score / unassociated_time)
         self.missed_probability = missed_probability
+        self.radius_range = radius_range
+        self.fov = fov
 
     def updateLifeCycle(self, life_cycle: LifeCycle, hypothesis: mk.Hypothesis, post: mk.GaussianState):
         score = 0
@@ -269,11 +273,12 @@ class Deleter(Printable):
         if np.sum(life_cycle.mese) > 1:
             life_cycle.score = life_cycle.score / 4
 
+        # 离开监测范围的目标需要删除
         angle = np.arctan2(post.state_vector[2], post.state_vector[0])
         r = np.linalg.norm([post.state_vector[0], post.state_vector[2]])
-        if (angle > np.pi / 3) or (angle < -np.pi / 3):
+        if (angle > self.fov[1]) or (angle < self.fov[0]):
             life_cycle.score = -1
-        if r > 15:
+        if r > self.radius_range[1] or r < self.radius_range[0]:
             life_cycle.score = -1
 
         if life_cycle.score > Deleter.max_score:
@@ -298,26 +303,53 @@ def track(associator, deleter, initiator, tracked_targets, unconfirmed_targets, 
     initiator.initiate(tracked_targets, unconfirmed_targets, unassociated_measurements, timestamp)
 
 
-# 创建工作类  预测、更新、关联、起始
-velocity_noise_coef = 1.5
-meas_noise_covar = np.diag([0, 5 / 180 * np.pi, 0.2, 0.01]) ** 2
+class Tracker:
 
-ekf_predictor = mk.KalmanPredictor(mm.TransitionModel(velocity_noise_coef))
-ekf_updater = mk.KalmanUpdater(mm.MeasurementModel(meas_noise_covar))
-associator = Associator(ekf_predictor, ekf_updater)
-_deleter = Deleter(updater=ekf_updater, unassociated_time=10.0, missed_probability=0.2)
-_initiator = Initiator(
-    predictor=ekf_predictor,
-    updater=ekf_updater,
-    associator=associator,
-    unassociated_time=2.0,
-    keep_motion_time=2.0,
-    keep_static_time=-10.0,
-    speed_threshold=0.1,
-    missed_distance=5,
-)
-tracked_targets = []  # 被跟踪的目标
-unconfirmed_targets = []  # 航迹起始阶段的目标
+    def __init__(
+        self,
+        tran_model_q,
+        meas_noise_r,
+        del_unassociated_time,
+        del_missed_probability,
+        init_unassociated_time,
+        init_keep_motion_time,
+        init_keep_static_time,
+        init_speed_th,
+        init_missed_distance,
+        init_covar,
+        fov,
+        radius_range,
+    ):
+        self.preictor = mk.KalmanPredictor(mm.TransitionModel(tran_model_q))
+        self.updater = mk.KalmanUpdater(mm.MeasurementModel(meas_noise_r))
+        self.associator = Associator(self.preictor, self.updater)
+        self.deleter = Deleter(
+            updater=self.updater, unassociated_time=del_unassociated_time, missed_probability=del_missed_probability, fov=fov, radius_range=radius_range
+        )
+        self.initiator = Initiator(
+            predictor=self.preictor,
+            updater=self.updater,
+            associator=self.associator,
+            unassociated_time=init_unassociated_time,
+            keep_motion_time=init_keep_motion_time,
+            keep_static_time=init_keep_static_time,
+            speed_threshold=init_speed_th,
+            missed_distance=init_missed_distance,
+            init_covar=init_covar,
+        )
+
+    def track(self, tracked_targets, unconfirmed_targets, measurements, missed_distance, timestamp):
+        # 数据关联，得到假设和未关联的测量
+        hypotheses, unassociated_measurements = self.associator.associate(tracked_targets, measurements, timestamp, missed_distance)
+
+        # 删除无效目标
+        self.deleter.delete(tracked_targets, hypotheses)
+        # for target in tracked_targets:
+        #     print(f"跟踪目标 {target.uuid} 误差 {target.life_cycle.mese} 分数 {target.life_cycle.score}")
+
+        # 航迹起始
+        self.initiator.initiate(tracked_targets, unconfirmed_targets, unassociated_measurements, timestamp)
+
 
 # %%
 # 处理器
@@ -331,14 +363,48 @@ class Measurement(BaseBasicData):
     attributes = ["azimuth", "distance", "velocity", "mag", "snr"]
 
 
+from dataclasses import dataclass
+
+
 @dataclass
-class Radarparam:
-    numChrip: int
-    numRangeBin: int
-    numChannel: int
-    lambda_over_d: float
-    resRange: float
-    resVelocity: float
+class RadarInitParam:
+    wavelength: float  # 波长 (m)
+    bandwidth: float  # 带宽 (Hz)
+    rx_antenna_spacing: float  # 接收天线间距 (m)
+    timeChrip: float  # Chrip 调频时长 (s)
+    timeChripGap: float  # Chrip 间距，从一个 Chrip 结束到下一个 Chrip 开始 (s)
+    timeFrameGap: float  # 帧间距，从一个帧结束到下一个帧开始 (s)
+    numChannel: int  # 雷达通道数
+    numRangeBin: int  # 距离单元数
+    numChrip: int  # Chrip 数
+    numMaxCfarPoints: int  # CFAR 检测的最大点数，超出上限时较远距离的点会被丢弃
+    numMaxCachedFrame: int  # 缓存帧的最大数量，用于叠加多帧聚类
+    numInitialMultiMeas: int  # 缓存多帧量测值的数组的初始大小
+    numInitialCluster: int  # 缓存聚类结果的数组的初始大小
+
+
+@dataclass
+class RadarParam:
+    # 输入参数
+    wavelength: float  # 单位: m, 雷达波长，例如 24GHz 雷达波长为 12.42663038e-3
+    bandwidth: float  # 单位: Hz, 雷达有效带宽
+    timeChrip: float  # 单位: s, 每个 Chrip 的时间
+    timeChripGap: float  # 单位: s, Chrip 间隔
+    timeFrameGap: float  # 单位: s, 帧间隔
+
+    numChannel: int  # 雷达通道数
+    numSample: int  # 采样点数
+    numRangeBin: int  # 距离单元数量
+    numChrip: int  # Chrip 数
+
+    # 衍生参数
+    timeChripTotal: float  # 单位: s, 一个完整 Chrip 的时间 (timeChrip + timeChripGap)
+    timeFrame: float  # 单位: s, 一帧的有效时间 (numChrip * timeChripFull)
+    timeFrameTotal: float  # 单位: s, 一帧的总时间 (timeFrameValid + timeFrameGap)
+    resRange: float  # 单位: m, 距离分辨率
+    resVelocity: float  # 单位: m/s, 速度分辨率
+
+    lambda_over_d: float  # 波长/天线间
 
 
 @dataclass
@@ -357,6 +423,14 @@ class RadarCFARConfig:
 
 
 @dataclass
+class DBSCANConfig:
+    wr: float
+    wv: float
+    eps: float
+    min_samples: int
+
+
+@dataclass
 class RadarCFARFilterConfig:
     range0: int
     range1: int
@@ -365,9 +439,28 @@ class RadarCFARFilterConfig:
 
 
 @dataclass
+class TrackConfig:
+    tran_model_q: float
+    meas_noise_r: np.ndarray
+    missed_distance: float
+    del_unassociated_time: float
+    del_missed_probability: float
+    init_unassociated_time: float
+    init_keep_motion_time: float
+    init_keep_static_time: float
+    init_speed_th: float
+    init_missed_distance: float
+    init_covar: np.ndarray
+    fov: np.ndarray
+    radius_range: np.ndarray
+
+
+@dataclass
 class RadarConfig:
     cfar_cfg: RadarCFARConfig
     cfar_filter_cfg: RadarCFARFilterConfig
+    dbscan_cfg: DBSCANConfig
+    track_cfg: TrackConfig
     channel_phase_diff_threshold: float
 
 
@@ -375,14 +468,54 @@ class RadarConfig:
 
 
 class Processor:
-    def __init__(self, param: Radarparam, config: RadarConfig):
-        self.param = param
+
+    def __init__(self, param: RadarInitParam, config: RadarConfig, velocity_noise_coef, meas_noise_covar):
+        timeChripTotal = param.timeChrip + param.timeChripGap
+        timeFrame = (timeChripTotal + param.timeChripGap) * param.numChrip
+        timeFrameTotal = timeFrame + param.timeFrameGap
+        self.param = RadarParam(
+            wavelength=param.wavelength,
+            bandwidth=param.bandwidth,
+            timeChrip=param.timeChrip,
+            timeChripGap=param.timeChripGap,
+            timeFrameGap=param.timeFrameGap,
+            numChannel=param.numChannel,
+            numSample=param.numRangeBin * param.numChrip,
+            numRangeBin=param.numRangeBin,
+            numChrip=param.numChrip,
+            timeChripTotal=timeChripTotal,
+            timeFrame=timeFrame,
+            timeFrameTotal=timeFrameTotal,
+            resRange=scipy.constants.c / (2 * param.bandwidth),
+            resVelocity=param.wavelength / (2 * timeFrame),
+            lambda_over_d=param.wavelength / param.rx_antenna_spacing,
+        )
         self.basic = RadarBasicData(
             mag=np.zeros(shape=(param.numRangeBin, param.numChrip)),
-            multi_frame_meas=deque(maxlen=8),
+            multi_frame_meas=deque(maxlen=param.numMaxCachedFrame),
             measurements=[],
         )
+
         self.config = config
+
+        self.tracker = Tracker(
+            tran_model_q=config.track_cfg.tran_model_q,
+            meas_noise_r=config.track_cfg.meas_noise_r,
+            del_unassociated_time=config.track_cfg.del_unassociated_time,
+            del_missed_probability=config.track_cfg.del_missed_probability,
+            init_unassociated_time=config.track_cfg.init_unassociated_time,
+            init_keep_motion_time=config.track_cfg.init_keep_motion_time,
+            init_keep_static_time=config.track_cfg.init_keep_static_time,
+            init_speed_th=config.track_cfg.init_speed_th,
+            init_missed_distance=config.track_cfg.init_missed_distance,
+            init_covar=config.track_cfg.init_covar,
+            fov=config.track_cfg.fov,
+            radius_range=config.track_cfg.radius_range,
+        )
+
+        self.tracked_targets = []  # 被跟踪的目标
+        self.unconfirmed_targets = []  # 航迹起始阶段的目标
+
         pass
 
     def __call__(self, rdms: np.ndarray, timestamp: datetime.datetime):
@@ -399,16 +532,21 @@ class Processor:
 
         # 计算角度、速度和距离
         measurements = self.__calc_measurement(cfar_indices, rdms)
-        # print(f"测量值：\r\n{meas}")
 
         # 聚类
         self.basic.multi_frame_meas.append(measurements)
-        measurements = self.__cluster(eps=0.7, min_samples=5)
+        measurements = self.__cluster()
         self.basic.measurements = measurements
 
         # 跟踪
         _measurements = [np.vstack(([0], x[:3].reshape(3, 1))) for x in measurements]
-        track(associator, _deleter, _initiator, tracked_targets, unconfirmed_targets, _measurements, 5, timestamp)
+        self.tracker.track(
+            tracked_targets=self.tracked_targets,
+            unconfirmed_targets=self.unconfirmed_targets,
+            measurements=_measurements,
+            missed_distance=self.config.track_cfg.missed_distance,
+            timestamp=timestamp,
+        )
 
         return measurements
 
@@ -433,12 +571,12 @@ class Processor:
         idx0 = x[:, 0].astype(int)
         idx1 = x[:, 1].astype(int)
         delta_phase = (np.angle(rdm[0, idx0, idx1]) - np.angle(rdm[1, idx0, idx1]) + np.pi) % (2 * np.pi) - np.pi
-        phi = np.arcsin(delta_phase / np.pi)
+        phi = np.arcsin(delta_phase * self.param.lambda_over_d / (2 * np.pi))
 
         ret = []
-        for item, p in zip(cfar_indices, phi):
+        for item, phase, p in zip(cfar_indices, delta_phase, phi):
             item: CFAR2dPoint
-            if np.abs(p) < self.config.channel_phase_diff_threshold:
+            if np.abs(phase) < self.config.channel_phase_diff_threshold:
                 idxR = round(item.idx0)
                 idxV = round(item.idx1)
                 if idxV > mag.shape[1] // 2:
@@ -465,22 +603,34 @@ class Processor:
                 ret.append(Measurement(p, dis, velo, item.mag, item.snr))
         return ret
 
-    def __cluster(self, eps=0.7, min_samples=5):
-        X = np.array([m for measurements in self.basic.multi_frame_meas for m in measurements])
+    def __cluster(self):
+        cfg = self.config.dbscan_cfg
+        wr = cfg.wr
+        wv = cfg.wv
+        eps = cfg.eps
+        min_samples = cfg.min_samples
+        X = np.array(list(chain.from_iterable(self.basic.multi_frame_meas)))
+        if X.ndim == 1:
+            return []
         _X = np.empty(shape=(len(X), 3))
-        _X[:, 0] = X[:, 1] * np.cos(X[:, 0])
-        _X[:, 1] = X[:, 1] * np.sin(X[:, 0])
-        _X[:, 2] = X[:, 2]
+        _X[:, 0] = X[:, 1] * np.cos(X[:, 0]) * wr
+        _X[:, 1] = X[:, 1] * np.sin(X[:, 0]) * wr
+        _X[:, 2] = X[:, 2] * wv
         labels = DBSCAN(eps=eps, min_samples=min_samples).fit_predict(_X)
         num_cluster = np.max(labels) + 1
         return [Measurement(np.mean(X[labels == i], axis=0)) for i in range(num_cluster)]
 
 
-# %% 加载数据
+# %%
+# 加载数据
+
 
 file = scipy.io.loadmat(file_name="../data/AT24G_RecordedData_丰海条形模块_单人行走.mat")
 radar_data_cube = file["RDM"][1:].transpose(0, 1, 3, 2)
-numFrame = file["numFrame"][0, 0] - 1
+
+frequency = file["frequency"][0, 0]
+bandwidth = file["bandwidth"][0, 0]
+numFrame = file["numFrame"][0, 0]
 numChannel = file["numChannel"][0, 0]
 numSample = file["numSample"][0, 0]
 numRangeBin = file["numRangeBin"][0, 0]
@@ -488,41 +638,66 @@ numChrip = file["numChrip"][0, 0]
 timeChrip = file["timeChrip"][0, 0]
 timeChripGap = file["timeChripGap"][0, 0]
 timeFrameGap = file["timeFrameGap"][0, 0]
-timeFrame = (timeChrip + timeChripGap) * numChrip + timeFrameGap
-resRange = 0.71
-resVelocity = scipy.constants.c / (24e9 * 2 * (timeChrip + timeChripGap) * numChrip)
-
-numTrain = (3, 8)
-numGuard = (2, 4)
 del file
+
+timeChripTotal = timeChrip + timeChripGap
+timeFrame = timeChripTotal * numChrip
+timeFrameTotal = timeFrame + timeFrameGap
+
+resRange = scipy.constants.c / (2 * bandwidth)
+resVelocity = scipy.constants.c / (frequency * 2 * timeFrameTotal)
+velocity_noise_coef = 1
+meas_noise_covar = np.diag([0, 5 / 180 * np.pi, 0.2, 0.01]) ** 2
 
 
 # %%
-
+# 仿真
 
 timestamp_start = datetime.datetime.now()
 
 # 初始化
 processor = Processor(
-    param=Radarparam(
-        numChrip=numChrip,
-        numRangeBin=numRangeBin,
+    param=RadarInitParam(
+        wavelength=scipy.constants.c / frequency,
+        bandwidth=bandwidth,
+        rx_antenna_spacing=6.98e-3,
+        timeChrip=timeChrip,
+        timeChripGap=timeChripGap,
+        timeFrameGap=timeFrameGap,
         numChannel=numChannel,
-        lambda_over_d=1.78,
-        resRange=0.71,
-        resVelocity=resVelocity,
+        numRangeBin=numRangeBin,
+        numChrip=numChrip,
+        numMaxCfarPoints=64,
+        numMaxCachedFrame=8,
+        numInitialMultiMeas=4,
+        numInitialCluster=4,
     ),
     config=RadarConfig(
-        cfar_cfg=RadarCFARConfig(numTrain=numTrain, numGuard=numGuard, thSNR=3.5, thMag=500),
+        cfar_cfg=RadarCFARConfig(numTrain=(3, 8), numGuard=(2, 4), thSNR=3.5, thMag=500),
         cfar_filter_cfg=RadarCFARFilterConfig(range0=2, range1=3, shape1=64, th=0.8),
-        channel_phase_diff_threshold=np.pi * 0.98,
+        dbscan_cfg=DBSCANConfig(wr=1, wv=2, eps=0.6, min_samples=5),
+        track_cfg=TrackConfig(
+            tran_model_q=5,
+            meas_noise_r=np.diag([0, 5 / 180 * np.pi, 0.2, 0.07]) ** 2,
+            missed_distance=1.5,
+            del_unassociated_time=4.0,
+            del_missed_probability=0.3,
+            init_unassociated_time=2.0,
+            init_keep_motion_time=1.5,
+            init_keep_static_time=10.0,
+            init_speed_th=0.2,
+            init_missed_distance=2.0,
+            init_covar=np.diag([0.7, 0.2, 0.7, 0.2, 0.7, 0.2]) ** 2,
+            fov=np.array([-np.pi * 45 / 180, np.pi * 45 / 180]),
+            radius_range=np.array([0.3, 8.0]),
+        ),
+        channel_phase_diff_threshold=np.pi * 0.9,
     ),
+    velocity_noise_coef=velocity_noise_coef,
+    meas_noise_covar=meas_noise_covar,
 )
 
-meas = processor(radar_data_cube[0], timestamp_start)
 
-
-# %%
 from stonesoup.types.state import GaussianState
 from stonesoup.plotter import AnimatedPlotterly
 from stonesoup.types.detection import Detection
@@ -536,7 +711,7 @@ unconfirmed_trajectorys = dict()
 
 timestamps = []
 for i, rdm in enumerate(radar_data_cube):
-    timestamp = timestamp_start + datetime.timedelta(seconds=i * timeFrame)
+    timestamp = timestamp_start + datetime.timedelta(seconds=i * timeFrameTotal)
     timestamps.append(timestamp)
     m = processor(rdm, timestamp)
 
@@ -550,14 +725,14 @@ for i, rdm in enumerate(radar_data_cube):
     all_measurements.append(measurement_set)
 
     # 保存轨迹，用于绘图
-    for target in tracked_targets:
+    for target in processor.tracked_targets:
         target: TrackedTarget
         uuid = target.uuid
         if uuid in trajectorys.keys():
             trajectorys[uuid].append(GaussianState(state_vector=target.state.state_vector, covar=target.state.covar, timestamp=timestamp))
         else:
             trajectorys[uuid] = [GaussianState(state_vector=target.state.state_vector, covar=target.state.covar, timestamp=timestamp)]
-    for target in unconfirmed_targets:
+    for target in processor.unconfirmed_targets:
         target: TrackedTarget
         uuid = target.uuid
         if uuid in unconfirmed_trajectorys.keys():
@@ -574,13 +749,24 @@ fig.update_layout(
     xaxis=dict(title="前后", range=[0, 10], scaleanchor="y", scaleratio=1, constrain="domain"),
     yaxis=dict(title="左右", range=[-5, 5], scaleanchor="x", scaleratio=1, constrain="domain"),
 )
-fig.show()
+fig
 
 # %%
 plotter = AnimatedPlotterly(timestamps, tail_length=0.12)
 plotter.plot_measurements(all_measurements, [0, 1], convert_measurements=False)
-plotter.plot_tracks(trajectorys.values(), [0, 2], track_label="User-confirmed")
-plotter.plot_tracks(unconfirmed_trajectorys.values(), [0, 2], track_label="User-unconfirmed", marker=dict(symbol="x", size=8))
+plotter.plot_tracks(unconfirmed_trajectorys.values(), [0, 2], track_label="起始阶段目标", marker=dict(symbol="x", size=8))
+plotter.plot_tracks(trajectorys.values(), [0, 2], track_label="已跟踪目标")
+
 plotter.fig
 # %%
+
 go.Figure(data=go.Surface(z=np.sum(np.abs(radar_data_cube[104]), axis=0)))
+
+
+# %%
+if __name__ == "__main__":
+    from myRadar.plot.io import plotly_fig_to_video_joblib
+
+    plotly_fig_to_video_joblib(plotter.fig, "output_video.mp4", width=1080, height=600)
+
+# %%
