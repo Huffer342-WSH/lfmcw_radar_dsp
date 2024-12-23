@@ -5,26 +5,24 @@ import threading
 import time
 import copy
 import queue
-
-import numpy as np
-import plotly.graph_objects as go
-
-from processor import Processor, RadarInitParam, RadarConfig, RadarCFARConfig, RadarCFARFilterConfig, TrackConfig, DBSCANConfig, TrackedTarget, Tracker
+import datetime
+import logging
 from collections import deque
 
-import scipy.constants
 from itertools import chain
 
+import numpy as np
+from scipy.fft import fftshift
+import scipy.constants
 
+import plotly.graph_objects as go
+
+import base
 from mcu_packet import McuPacket_Manager
 import datapacket
 from usart import Usart
 
-import datetime
-
-import base
-
-from scipy.fft import fftshift
+from processor import Processor, RadarInitParam, RadarConfig, RadarCFARConfig, RadarCFARFilterConfig, TrackConfig, DBSCANConfig, TrackedTarget, Tracker
 
 
 class BackEnd(multiprocessing.Process, base.BaseLogger):
@@ -49,6 +47,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         serial_config,
     ):
         multiprocessing.Process.__init__(self)
+        base.BaseLogger.__init__(self)
 
         self.message_queue = message_queue
         self.conn = conn
@@ -56,7 +55,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         self.serial_config = serial_config
 
         self.is_init = False
-        self.cntFrame = 0
+        self.cntFrame: int = 0
         self.idxFrame = 0
 
         self.numSample = 0
@@ -70,9 +69,10 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         self._has2DFFT = False
 
     def __initialize(self):
+        self.packet_queue = queue.Queue(maxsize=32)
         self.frame_queue = queue.Queue(maxsize=32)
         self.bufferFrame = deque(maxlen=2000)
-        base.BaseLogger.__init__(self)
+
         self.processor = self.creat_radar_processor()
 
     def creat_radar_processor(self):
@@ -129,7 +129,6 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
             return False
 
     def receiveOnePacket(self, type: str, data: bytes):
-
         packet = None
         func = self._callback_map.get(type, None)
         if func is not None:
@@ -137,7 +136,6 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         else:
             self.log_warning(f"Unsupported type: {type}")
             return False
-
         ret = None
         if self.update_idxFrame(packet.idxFrame):
             self.__tempFrame["idxFrame"] = self.idxFrame
@@ -145,17 +143,6 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
 
         self.__tempFrame[self._type_map[type]] = packet
         return ret
-
-    def callback(self, type: str, data: bytes) -> bool:
-
-        frame = self.receiveOnePacket(type, data)
-        if frame is not None:
-            if self.cntFrame == 3:
-                self.is_init = True
-            elif frame is not None and self.cntFrame >= 4:
-                self.frame_queue.put(frame)
-
-        return True
 
     def genFigure_2DFFT(self, rdm: np.ndarray):
 
@@ -266,27 +253,26 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         }
         return msg
 
-    def genFigures(self) -> None:
-        frame = self.frame_queue.get()
-        frame: dict
-
-        self.bufferFrame.append(frame)
-
-        msg = dict()
-
-        rdm = frame.get("2DFFT")
-        if rdm is not None:
-            temp = self.genFigure_2DFFT(rdm.transpose(0, 2, 1))
-            msg.update(temp)
-
-        # 发送数据
-        if not self.message_queue.full():
-            self.message_queue.put(msg)
-
-    def createThreadGenFigures(self):
+    def createThreadReceivePacket(self):
         def task():
+            self.log_debug("接收数据线程启动")
             while self.event_shutdown.is_set() == False:
-                self.genFigures()
+                packet_type, packet_data = self.packet_queue.get()
+                self.log_debug(f"接收到数据包:{packet_type}")
+
+                frame = self.receiveOnePacket(packet_type, packet_data)
+                if frame is not None:
+                    self.bufferFrame.append(frame)
+                    msg = dict()
+
+                    rdm = frame.get("2DFFT")
+                    if rdm is not None:
+                        temp = self.genFigure_2DFFT(rdm.transpose(0, 2, 1))
+                        msg.update(temp)
+
+                    # 发送数据
+                    if not self.message_queue.full():
+                        self.message_queue.put(msg)
 
         return threading.Thread(target=task, daemon=True)
 
@@ -295,21 +281,18 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
 
         self.log_debug(f"进程启动 PID:{multiprocessing.current_process().pid}")
 
-        # 连接串口
-        self.stream = Usart()
-        if not self.stream.connect_by_name(name_part=self.serial_config["name"], baudrate=self.serial_config["baudrate"]):
-            self.event_shutdown.set()
-            return
-        else:
-            self.log_debug(f"串口:{self.serial_config} 连接成功")
-        self.mcuPackerManager = McuPacket_Manager(self.stream, self.callback)
+        self.mcuPackerManager = McuPacket_Manager(port=self.serial_config["name"], baudrate=self.serial_config["baudrate"], queue=self.packet_queue)
+        self.mcuPackerManager.logger.setLevel(logging.WARNING)
 
         # 接收数据线程启动
+        thread_recv_packet = self.createThreadReceivePacket()
+        thread_recv_packet.start()
         self.mcuPackerManager.start()
 
         # 预接收一些数据
-        while self.is_init == False:
+        while self.cntFrame < 3:
             time.sleep(0.1)
+        self.is_init = True
         self.log_info(
             f"""\r\n
 ==========================================
@@ -324,25 +307,28 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         self.log_info(f"雷达参数\r\n{self.processor.param}")
         self.log_info(f"雷达配置\r\n{self.processor.config}")
 
-        thread_frame_process = self.createThreadGenFigures()
-        thread_frame_process.start()
-
         # 开始实时处理数据
         while not self.event_shutdown.is_set():
             # 接收进程管道消息
-            if self.conn.poll():
-                msg = self.conn.recv()
-                print(f"[BackEnd]: receive message: {msg}")
-                if msg["type"] == "save":
-                    self.saveData()
+            msg = self.conn.recv()
+            print(f"[BackEnd]: receive message: {msg}")
+            if msg["type"] == "save":
+                self.saveData()
+            else:
+                self.log_warning(f"Unknown message: {msg}")
 
-        thread_frame_process.join()
+        thread_recv_packet.join()
 
 
 if __name__ == "__main__":
     print("后端测试")
+    from usart import Usart
+
+    serial_port_name = Usart.select_serial_port()
+    print(f"select serial port: {serial_port_name}")
+
     message_queue = multiprocessing.Queue(maxsize=3)
     event_shutdown = multiprocessing.Event()
     para, son = multiprocessing.Pipe()
-    backend = BackEnd(message_queue=message_queue, conn=son, event_shutdown=event_shutdown, serial_config={"name": "COM17", "baudrate": 3250000})
+    backend = BackEnd(message_queue=message_queue, conn=son, event_shutdown=event_shutdown, serial_config={"name": serial_port_name, "baudrate": 3250000})
     backend.start()

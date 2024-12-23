@@ -54,27 +54,30 @@ class AT24G_RangeFFT_ComplexI16(np.ndarray):
 class AT24G_2DFFT_ComplexI16(np.ndarray):
     def __new__(cls, type, data):
         if type != "AT24G-2DFFT-ComplexI16":
-            return
+            raise ValueError("Invalid type provided, expected 'AT24G-2DFFT-ComplexI16'")
+
+        # Extract metadata
         info = np.frombuffer(data[:4], dtype=np.uint8)
-        numChannel = info[1]
-        numRangeBin = info[2]
-        numChrip = info[3]
+        idxFrame, numChannel, numRangeBin, numChrip = info
+
+        # Parse complex data
         temp = np.frombuffer(data[4:], dtype=np.int16)
         complexData = temp[0::2] + 1j * temp[1::2]
-        # print(f"shape:{numChannel},{numRangeBin} {numChrip}")
         complexData = complexData.reshape(numChannel, numRangeBin, numChrip).transpose(0, 2, 1)
+
+        # Create ndarray view
         obj = complexData.view(cls)
+        obj.idxFrame = idxFrame
+        obj.numChannel = numChannel
+        obj.numRangeBin = numRangeBin
+        obj.numChrip = numChrip
+        obj.data_type = type
+
         return obj
 
     def __init__(self, type, data):
-        if type != "AT24G-2DFFT-ComplexI16":
-            raise Exception("type error")
-        self.data_type = "AT24G-2DFFT-ComplexI16"
-        info = np.frombuffer(data[:4], dtype=np.uint8)
-        self.idxFrame = info[0]
-        self.numChannel = info[1]
-        self.numRangeBin = info[2]
-        self.numChrip = info[3]
+        # Initialization logic handled in __new__; no redundant actions needed here
+        pass
 
 
 class RawData_RealI16(np.ndarray):

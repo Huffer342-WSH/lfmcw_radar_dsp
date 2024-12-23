@@ -1,7 +1,8 @@
 import multiprocessing
+import logging
+
 from frontend import FrontEnd
 from backend import BackEnd
-import logging
 
 
 if __name__ == "__main__":
@@ -16,7 +17,8 @@ if __name__ == "__main__":
         queue=message_queue,
     )
 
-    backend = BackEnd(message_queue=message_queue, conn=son, event_shutdown=event_shutdown, serial_config={"name": "COM17", "baudrate": 3250000})
+    backend = BackEnd(message_queue=message_queue, conn=son, event_shutdown=event_shutdown, serial_config={"name": "/dev/ttyUSB2", "baudrate": 3250000})
+    backend.logger.setLevel(logging.WARNING)
     backend.start()
 
     app_wrapper.run(debug=False)

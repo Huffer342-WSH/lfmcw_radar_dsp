@@ -1,122 +1,155 @@
-# %%
+import multiprocessing
+import threading
 import serial
 import serial.tools.list_ports
+import time
 
 
-class Usart(serial.Serial):
-    def __init__(self) -> None:
-        self.search()
-        self.portIndex = 0
+class CircularBuffer:
+    def __init__(self, size):
+        self.size = size
+        self.buffer = multiprocessing.Array("c", size)  # Shared memory array
+        self.start = multiprocessing.Value("i", 0)  # Start of the buffer
+        self.end = multiprocessing.Value("i", 0)  # End of the buffer
+        self.lock = multiprocessing.Lock()  # Ensure thread-safe access
+        self.data_available = multiprocessing.Condition()
 
-    def search(self):
-        self.portsList = list(serial.tools.list_ports.comports())
+    def write(self, data):
+        with self.lock:
+            data_len = len(data)
+            space_left = self.size - self._used_space()
+            if data_len > space_left:
+                data = data[-space_left:]  # Only keep the last part that fits
+                data_len = len(data)
 
-    def connect_by_CLI(self, baudrate=None):
-        self.search()
-        count = self.portsList.__len__()
-        if count == 0:
-            print("没有识别到串口，退出。")
-            return
-        for i in range(count):
-            print(i, ":", self.portsList[i])
+            write_end = (self.end.value + data_len) % self.size
+
+            if self.end.value + data_len <= self.size:
+                self.buffer[self.end.value : self.end.value + data_len] = data
+            else:
+                first_part = self.size - self.end.value
+                self.buffer[self.end.value :] = data[:first_part]
+                self.buffer[:write_end] = data[first_part:]
+
+            self.end.value = write_end
+
+            if self._used_space() > self.size:
+                self.start.value = (self.start.value + data_len) % self.size
+
+        with self.data_available:
+            self.data_available.notify_all()
+
+    def read(self, size):
+        with self.lock:
+            available_data = self._used_space()
+            size = min(size, available_data)
+
+            read_end = (self.start.value + size) % self.size
+            if self.start.value + size <= self.size:
+                data = self.buffer[self.start.value : self.start.value + size]
+            else:
+                first_part = self.size - self.start.value
+                data = self.buffer[self.start.value :] + self.buffer[:read_end]
+
+            self.start.value = read_end
+            return bytes(data)
+
+    def _used_space(self):
+        if self.end.value >= self.start.value:
+            return self.end.value - self.start.value
+        else:
+            return self.size - self.start.value + self.end.value
+
+
+class Usart(multiprocessing.Process):
+    def __init__(self, port, baudrate, buffer_size=None):
+        super().__init__()
+        if buffer_size is None:
+            buffer_size = baudrate * 2
+        self.port = port
+        self.baudrate = baudrate
+        self.buffer = CircularBuffer(buffer_size)
+        self.serial_connection = serial.Serial()
+        self.serial_connection.port = self.port
+        self.serial_connection.baudrate = self.baudrate
+        self._stop_event = multiprocessing.Event()
+
+    def run(self):
+        """Main loop to continuously read data from serial port."""
+        self.serial_connection.open()
+        while not self._stop_event.is_set():
+            if self.serial_connection.in_waiting:
+                data = self.serial_connection.read(self.serial_connection.in_waiting)
+                self.buffer.write(data)
+        self.serial_connection.close()
+
+    def stop(self):
+        """Signal the process to stop."""
+        self._stop_event.set()
+
+    def read(self, size=None, timeout=None):
+        """Advanced read function. Blocks until the specified size is read or returns all available data if size is None."""
+        data = bytearray()
+        start_time = time.time()
+        with self.buffer.data_available:
+            while size is None or len(data) < size:
+                chunk = self.buffer.read(size - len(data) if size else self.buffer._used_space())
+                data.extend(chunk)
+
+                if size is None or len(data) == size:
+                    break
+                if size and len(data) > size:
+                    raise ValueError("Requested size is larger than available data.")
+
+                if timeout != None and time.time() - start_time > timeout:
+                    break
+
+                self.buffer.data_available.wait()
+
+        return bytes(data)
+
+    def in_waiting(self):
+        return self.buffer._used_space()
+
+    def select_serial_port():
+        ports = serial.tools.list_ports.comports()
+        port_list = []
+
+        if not ports:
+            print("No serial ports found.")
+            return None
+
+        print("Available serial ports:")
+        for i, port in enumerate(ports):
+            port_info = f"{i + 1}: {port.device} - {port.description}"
+            print(port_info)
+            port_list.append(port.device)
 
         while True:
             try:
-                # 提示用户输入一个数字，并从控制台读取输入
-                print("请输入 需要连接的串口序号：")
-                input_str = input()
-                # 尝试将输入转换为数字
-                num = int(input_str)
-                if num >= 0 and num < count:
-                    self.portIndex = num
-                    # 如果转换成功，跳出循环
-                    break
+                choice = int(input("Select a port by number: ")) - 1
+                if 0 <= choice < len(port_list):
+                    selected_port = port_list[choice]
+                    print(f"You selected: {selected_port}")
+                    return selected_port
                 else:
-                    print("输入的序号超出有效范围，请重新输入")
+                    print("Invalid choice, please try again.")
             except ValueError:
-                # 如果转换失败，打印错误信息并继续循环
-                print("输入的不是一个整数，请重新输入。")
+                print("Invalid input, please enter a number.")
 
-        if baudrate is None:
-            while True:
-                try:
-                    # 提示用户输入一个数字，并从控制台读取输入
-                    print("请输入 串口使用的波特率：")
-                    input_str = input()
-                    # 尝试将输入转换为数字
-                    baudrate = int(input_str)
-                    break
-                except ValueError:
-                    # 如果转换失败，打印错误信息并继续循环
-                    print("输入的不是一个整数，请重新输入。")
-
-        serial.Serial.__init__(self, port=self.portsList[self.portIndex].device, baudrate=baudrate)
-
-    def connect(self, index=0, baudrate=115200):
-        if self.portsList.__len__() > index:
-            super(Usart, self).__init__(self.portsList[index].device, baudrate)
-            return True
-        else:
-            return False
-
-    def connect_by_name(self, name_part, baudrate=115200):
-        self.search()
-        for port in self.portsList:
-            if name_part in port.device or name_part in port.description:
-                try:
-                    super(Usart, self).__init__(port.device, baudrate)
-                    print(f"已连接到: {port.device} ({port.description})")
-                    return True
-                except serial.SerialException:
-                    print(f"无法连接到: {port.device} ({port.description})")
-                return False
-        print(f"未找到包含 '{name_part}' 的串口设备。")
-        return False
-
-
-def list_and_select_serial_port():
-    ports = serial.tools.list_ports.comports()
-    port_list = []
-
-    if not ports:
-        print("No serial ports found.")
-        return None
-
-    print("Available serial ports:")
-    for i, port in enumerate(ports):
-        port_info = f"{i + 1}: {port.device} - {port.description}"
-        print(port_info)
-        port_list.append(port.device)
-
-    while True:
-        try:
-            choice = int(input("Select a port by number: ")) - 1
-            if 0 <= choice < len(port_list):
-                selected_port = port_list[choice]
-                print(f"You selected: {selected_port}")
-                return selected_port
-            else:
-                print("Invalid choice, please try again.")
-        except ValueError:
-            print("Invalid input, please enter a number.")
-
-
-# %%
 
 if __name__ == "__main__":
+    # Example usage
+    usart = Usart(port="/dev/ttyUSB2", baudrate=3250000, buffer_size=2048)
+    usart.start()
 
-    usart = Usart()
-    # usart.connect_by_CLI()
-    # usart.connect(index=3, baudrate=2000000)
-    usart.connect_by_name("COM9", 2000000)
-
-    while True:
-        while usart.read(1) != b"\x55":
-            pass
-        usart.read(1)
+    try:
         while True:
-            data = usart.read(520)
-            if data[1] != 0xAA:
-                print(data[1])
-                break
-            print(data)
+            data = usart.read(100)  # Blocking read for 100 bytes
+            if data:
+                print(f"Received: {data}")
+                print(f"Buffer size: {usart.buffer._used_space()}")
+                print(f"In waiting: {usart.in_waiting()}")
+    except KeyboardInterrupt:
+        usart.stop()
+        usart.join()

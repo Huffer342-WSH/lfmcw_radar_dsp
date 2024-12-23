@@ -43,6 +43,11 @@ class LifeCycle(Printable):
         self.post_measurements = []
         self.mese = 0
 
+    def calculate_mese(self):
+        a = np.array(self.measurements)
+        b = np.array(self.post_measurements)
+        self.mese = (np.linalg.norm(a - b, axis=0) / len(a)).reshape(-1)
+
 
 class TrackedTarget:
     next_uuid = 0
@@ -180,6 +185,7 @@ class Initiator(Printable):
         # 计算测量值误差方差
         a = np.array(life_cycle.measurements)
         b = np.array(life_cycle.post_measurements)
+
         life_cycle.mese = (np.linalg.norm(a - b, axis=0) / len(a)).reshape(-1)
         if np.sum(life_cycle.mese) > 1:
             life_cycle.score = -1
@@ -200,6 +206,7 @@ class Initiator(Printable):
                 target.state = self.updater.update(hypothesis)
             # 更新生命周期
             self.updateLifeCycle(target.life_cycle, hypothesis, target.state)
+            print(f"起始目标 {target.uuid} 误差 {target.life_cycle.mese} 分数 {target.life_cycle.score}")
 
         # 删除无效目标，添加确认目标
         for t in reversed(unconfirmed_targets):
@@ -215,9 +222,8 @@ class Initiator(Printable):
         for measurement in unassociated_measurements:
             theta, phi, rho, rho_rate = measurement
             # 速度慢的测量值不用于创建新目标
-            if np.abs(rho_rate) < 0.1:
-                continue
-            unconfirmed_targets.append(TrackedTarget(measurement, init_covar=self.init_covar, timestamp=timestamp))
+            if np.abs(rho_rate) > self.speed_threshold:
+                unconfirmed_targets.append(TrackedTarget(measurement, init_covar=self.init_covar, timestamp=timestamp))
 
 
 class Deleter(Printable):
@@ -261,9 +267,7 @@ class Deleter(Printable):
             del life_cycle.post_measurements[0]
             # 计算测量值误差方差
 
-        a = np.array(life_cycle.measurements)
-        b = np.array(life_cycle.post_measurements)
-        life_cycle.mese = (np.linalg.norm(a - b, axis=0) / len(a)).reshape(-1)
+        life_cycle.calculate_mese()
 
         if np.sum(life_cycle.mese) > 1:
             life_cycle.score = life_cycle.score / 4
@@ -282,6 +286,7 @@ class Deleter(Printable):
     def delete(self, targets: list, hypotheses):
         for target, hypothesis in zip(targets, hypotheses):
             self.updateLifeCycle(target.life_cycle, hypothesis, target.state)
+            print(f"跟踪目标 {target.uuid} 误差 {target.life_cycle.mese} 分数 {target.life_cycle.score}")
         for target in reversed(targets):
             if target.life_cycle.score < 0:
                 targets.remove(target)

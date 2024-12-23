@@ -2,8 +2,11 @@
 import threading, io, typing, logging, time
 import numpy as np
 from collections import deque
+import queue
+
 from scipy.io import savemat
 import datapacket
+from usart import Usart
 
 import base
 
@@ -36,7 +39,7 @@ class McuPacket_Manager(threading.Thread, base.BaseLogger):
 
     HEAD = bytearray([0x69, 0x6E, 0x66, 0x6F, 0x68, 0x61, 0x6E, 0x64, 0x6D, 0x6D, 0x52, 0x61, 0x64, 0x61, 0x72, 0x73])
 
-    def __init__(self, stream: io.IOBase = None, callback: typing.Callable[[str, bytes], bool] = None) -> None:
+    def __init__(self, port, baudrate, queue: queue.Queue) -> None:
         """
         初始化线程对象，继承自threading.Thread，可指定数据流及处理该流数据的回调函数。
 
@@ -48,10 +51,12 @@ class McuPacket_Manager(threading.Thread, base.BaseLogger):
             无
         """
         threading.Thread.__init__(self, daemon=True)
-        base.BaseLogger.__init__(self, level=logging.INFO)
+        base.BaseLogger.__init__(self, level=logging.DEBUG)
 
-        self.stream = stream
-        self.callback = callback
+        self.port = port
+        self.baudrate = baudrate
+
+        self.packet_queue = queue
         self.que = deque(maxlen=1000)
         self._prev_packet_index = -1
 
@@ -67,32 +72,33 @@ class McuPacket_Manager(threading.Thread, base.BaseLogger):
     def registerStream(self, stream: io.IOBase) -> None:
         self.stream = stream
 
-    def checkMcuPacket(arr: bytes) -> bool:
+    def checkMcuPacket(arr: bytes) -> tuple[bool, str]:
+        reason = ""
         sizeTail = 4
         ret = True
 
         if len(arr) < 8:
             # 检查长度
             ret = False
+            reason = "too short"
+
             print("[McuPacket_Manager]: (ERROR) too short")
         else:
             check_sum_inside = int.from_bytes(arr[-4:], byteorder="little")
             check_sum_outside = np.sum(np.frombuffer(arr[0:-sizeTail], dtype=np.uint8), dtype=np.uint32)
             if check_sum_inside != check_sum_outside:
-                print(f"[McuPacket_Manager]: (ERROR) check sum wrong: except {check_sum_inside} but get {check_sum_outside}")
+                reason = f"check sum wrong : except {check_sum_inside} but get {check_sum_outside}"
                 ret = False
             else:
-                # print(f"[McuPacket_Manager]: Check sum right: except {check_sum_inside}  get {check_sum_outside}")
                 ret = True
-        return ret
+        return ret, reason
 
     def run(self):
+
+        self.stream = Usart(port=self.port, baudrate=self.baudrate)
+        self.stream.start()
         self._isRunning = True
-        if self.stream == None:
-            raise Exception("stream is None")
-        if not self.stream.readable():
-            raise Exception("stream is not readable")
-        self.stream.read()
+
         sizeHead = len(self.HEAD)
         sizeInfo = 36
         sizeTail = 4
@@ -112,7 +118,7 @@ class McuPacket_Manager(threading.Thread, base.BaseLogger):
         state = ST_HEAD
 
         buffer = bytearray()
-        buffer.extend(self.stream.read_all())
+        buffer.extend(self.stream.read())
         skippedByte = bytearray()
         numSkippedBytes = 0
         while self._isRunning:
@@ -137,7 +143,6 @@ class McuPacket_Manager(threading.Thread, base.BaseLogger):
                         numSkippedBytes += 1
                 if i != 0:
                     del buffer[0:i]
-                buffer.extend(self.stream.read_all())
             elif state == ST_INFO:
                 """读取数据包的头部信息，检查参数是否合理"""
                 if len(buffer) < sizeInfo + sizeHead:
@@ -157,13 +162,18 @@ class McuPacket_Manager(threading.Thread, base.BaseLogger):
                     buffer.extend(self.stream.read(packetSize - len(buffer)))
 
                 # 校验数据包
-                flag = McuPacket_Manager.checkMcuPacket(buffer[0:packetSize])
+                flag, reason = McuPacket_Manager.checkMcuPacket(buffer[0:packetSize])
                 if flag == False:
-                    print("[McuPacket_Manager]: Packet Wrapper ERROR")
+                    self.log_warning(f'Packet Wrapper ERROR, reason: "{reason}"')
+                else:
+                    self.log_info(f"Packet Wrapper OK")
 
                 # 回调并校验
                 _data = buffer[sizeHead + sizeInfo : sizeHead + sizeInfo + _dataSize]
-                self.callback(TYPE_MAP[_type], _data)
+                if self.packet_queue.full():
+                    self.log_warning("packet queue is full")
+                else:
+                    self.packet_queue.put((TYPE_MAP[_type], _data))
 
                 # 回调成功
                 if flag == True:
@@ -183,7 +193,7 @@ class McuPacket_Manager(threading.Thread, base.BaseLogger):
 queuePacket = deque(maxlen=1000)
 
 
-def cb(type: str, data: bytes) -> bool:
+def parse(type: str, data: bytes):
     if type == "AT24G-RawData-RealI16":
         packet = datapacket.AT24G_RawData_RealI16(type, data)
         queuePacket.append(packet)
@@ -196,18 +206,30 @@ def cb(type: str, data: bytes) -> bool:
     else:
         print("unknown type: ", type)
         return False
-    return True
+    return packet
+
+
+def task_recv_packet(queue: queue.Queue):
+    while True:
+        type, data = queue.get()
+        packet = parse(type, data)
+        if packet is not None:
+            print(f"Receive packet: {packet.__dict__}")
 
 
 if __name__ == "__main__":
-    from usart import Usart
 
-    usart = Usart()
-    usart.connect_by_CLI(3250000)
-    # usart.connect_by_name("COM12", 3250000)
-    thread_parse = McuPacket_Manager(usart, callback=cb)
+    serial_port = "/dev/ttyUSB2"
+    serial_port = Usart.select_serial_port()
+
+    packet_queue = queue.Queue(maxsize=32)
+    thread_parse = McuPacket_Manager(serial_port, 3250000, queue=packet_queue)
+    thread_parse.logger.setLevel(logging.DEBUG)
     thread_parse.daemon = True
 
+    thread_recv_packet = threading.Thread(target=task_recv_packet, args=(thread_parse.packet_queue,))
+
+    thread_recv_packet.start()
     thread_parse.start()
 
     try:
