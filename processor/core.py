@@ -3,7 +3,7 @@ import sys
 
 sys.path.append("../")
 
-
+import typing
 import numpy as np
 import scipy.constants
 import scipy.io
@@ -71,6 +71,9 @@ class TrackedTarget:
         vz = rho_rate * np.sin(theta)
         state = mk.GaussianState(state_vector=np.array([x, vx, y, vy, z, vz]).reshape(-1, 1), covar=init_covar, timestamp=timestamp)
         return state
+
+    def get_dict(self):
+        return {"id": self.uuid, "state_vector": self.state.state_vector, "covar": self.state.covar}
 
 
 class Associator(Printable):
@@ -513,8 +516,8 @@ class Processor:
             radius_range=config.track_cfg.radius_range,
         )
 
-        self.tracked_targets = []  # 被跟踪的目标
-        self.unconfirmed_targets = []  # 航迹起始阶段的目标
+        self.tracked_targets: typing.List[TrackedTarget] = []  # 被跟踪的目标
+        self.unconfirmed_targets: typing.List[TrackedTarget] = []  # 航迹起始阶段的目标
 
         pass
 

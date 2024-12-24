@@ -13,6 +13,7 @@ from itertools import chain
 
 import numpy as np
 from scipy.fft import fftshift
+import scipy.io
 import scipy.constants
 
 import plotly.graph_objects as go
@@ -22,15 +23,15 @@ from mcu_packet import McuPacket_Manager
 import datapacket
 from usart import Usart
 
-from processor import Processor, RadarInitParam, RadarConfig, RadarCFARConfig, RadarCFARFilterConfig, TrackConfig, DBSCANConfig, TrackedTarget, Tracker
+from core import Processor, RadarInitParam, RadarConfig, RadarCFARConfig, RadarCFARFilterConfig, TrackConfig, DBSCANConfig, TrackedTarget, Tracker
 
 
 class BackEnd(multiprocessing.Process, base.BaseLogger):
 
     _type_map = {
-        "AT24G-RawData-RealI16": "RawData",
-        "AT24G-RangeFFT-ComplexI16": "RangeFFT",
-        "AT24G-2DFFT-ComplexI16": "2DFFT",
+        "AT24G-RawData-RealI16": "SignalRaw",
+        "AT24G-RangeFFT-ComplexI16": "SignalRangeFFT",
+        "AT24G-2DFFT-ComplexI16": "Signal2DFFT",
     }
 
     _callback_map = {
@@ -75,7 +76,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
 
         self.processor = self.creat_radar_processor()
 
-    def creat_radar_processor(self):
+    def creat_radar_processor(self) -> Processor:
         processor = Processor(
             param=RadarInitParam(
                 wavelength=scipy.constants.c / 24.125e9,
@@ -253,6 +254,35 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         }
         return msg
 
+    def saveData(self) -> None:
+        self.log_info("Saving data...")
+        filename = datetime.datetime.now().strftime("AT24G_RecordedData %Y-%m-%d %H-%M-%S.mat")
+
+        temp = list(self.bufferFrame)
+
+        savedata = dict()
+        savedata["RDM"] = np.stack([i["Signal2DFFT"] for i in temp])
+        savedata.update(self.processor.param.__dict__)
+        savedata["numFrame"] = len(temp)
+
+        for i in temp:
+            if type(i) != dict():
+                self.log_warning(f"frame type error {type(i)}")
+
+        savedata["frames"] = temp
+
+        # 保存文件
+        try:
+            self.log_info(f"保存文件：{filename}")
+            scipy.io.savemat(filename, savedata, do_compression=True)
+        except Exception as e:
+            self.log_error(f"保存文件失败：{e}")
+            return
+
+    def save2frame(self, frame: dict):
+        frame["tracked_targets"] = [target.get_dict() for target in self.processor.tracked_targets]
+        frame["unconfirmed_targets"] = [target.get_dict() for target in self.processor.unconfirmed_targets]
+
     def createThreadReceivePacket(self):
         def task():
             self.log_debug("接收数据线程启动")
@@ -261,11 +291,11 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
                 self.log_debug(f"接收到数据包:{packet_type}")
 
                 frame = self.receiveOnePacket(packet_type, packet_data)
-                if frame is not None:
-                    self.bufferFrame.append(frame)
+                if frame is not None and self.is_init:
+
                     msg = dict()
 
-                    rdm = frame.get("2DFFT")
+                    rdm = frame.get("Signal2DFFT")
                     if rdm is not None:
                         temp = self.genFigure_2DFFT(rdm.transpose(0, 2, 1))
                         msg.update(temp)
@@ -273,6 +303,10 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
                     # 发送数据
                     if not self.message_queue.full():
                         self.message_queue.put(msg)
+
+                    self.save2frame(frame)
+
+                    self.bufferFrame.append(frame)
 
         return threading.Thread(target=task, daemon=True)
 
@@ -311,12 +345,13 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         while not self.event_shutdown.is_set():
             # 接收进程管道消息
             msg = self.conn.recv()
-            print(f"[BackEnd]: receive message: {msg}")
+            self.log_info(f"Pipe receive message: {msg}")
             if msg["type"] == "save":
                 self.saveData()
             else:
                 self.log_warning(f"Unknown message: {msg}")
 
+        self.log_info(f"等待线程结束 {thread_recv_packet.is_alive()}")
         thread_recv_packet.join()
 
 

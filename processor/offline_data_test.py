@@ -27,7 +27,7 @@ import plotly.graph_objects as go
 import datetime
 
 
-from processor import *
+from core import *
 
 
 # %%

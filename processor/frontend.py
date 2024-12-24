@@ -1,6 +1,7 @@
 import plotly.graph_objects as go
 
 import multiprocessing, threading, time
+import multiprocessing.connection
 from datetime import datetime
 
 import numpy as np
@@ -13,12 +14,13 @@ import base
 
 
 class FrontEnd(base.BaseLogger):
-    def __init__(self, queue: multiprocessing.Queue, title="雷达上位机", update_title=None):
+
+    def __init__(self, queue: multiprocessing.Queue, conn: multiprocessing.connection._ConnectionBase, title="雷达上位机", update_title=None):
         """
         Initializes the Dash application.
         """
         self.app = Dash(__name__, title=title, update_title=update_title)
-        self.parent_conn = None  # Placeholder for external connection
+        self.parent_conn = conn
         self._setup_layout()
         self._setup_callbacks()
         self.threads = []
@@ -84,8 +86,8 @@ class FrontEnd(base.BaseLogger):
         def button_click(n_clicks):
             if n_clicks >= 1:
                 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                if self.parent_conn:
-                    self.parent_conn.send({"type": "save"})
+                self.parent_conn.send({"type": "save"})
+                self.log_debug(f"Pipe sned message")
                 return f"[{current_time}]: 已保存"
             return ""
 
@@ -112,12 +114,21 @@ class FrontEnd(base.BaseLogger):
 
 
 class BackEnd_Example(multiprocessing.Process):
-    def __init__(self, message_queue: multiprocessing.Queue):
+
+    def __init__(self, message_queue: multiprocessing.Queue, conn: multiprocessing.connection._ConnectionBase):
         multiprocessing.Process.__init__(self)
         self.message_queue = message_queue
+        self.conn = conn
+
+    def task_recv_pipe(self):
+        while True:
+            data = self.conn.recv()
+            print(f"BackEnd_Example receive data: {data}")
 
     def run(self):
         print("BackEnd_Example start")
+        thread_recv_pipe = threading.Thread(target=self.task_recv_pipe, daemon=True)
+        thread_recv_pipe.start()
         while True:
             time.sleep(2)
             data = {
@@ -141,11 +152,10 @@ if __name__ == "__main__":
     event_shutdown = multiprocessing.Event()
     para, son = multiprocessing.Pipe()
 
-    app_wrapper = FrontEnd(
-        queue=message_queue,
-    )
+    app_wrapper = FrontEnd(queue=message_queue, conn=para)
 
-    backend = BackEnd_Example(message_queue=message_queue)
+    backend = BackEnd_Example(message_queue=message_queue, conn=son)
+    backend.start()
 
     app_wrapper.run(debug=False)
     print("Dash App 运行结束")
