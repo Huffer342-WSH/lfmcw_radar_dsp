@@ -5,10 +5,10 @@ from collections import deque
 import queue
 
 from scipy.io import savemat
-import datapacket
-from usart import Usart
 
-import base
+from . import base
+from . import datapacket
+from .usart import Usart
 
 # %%
 

@@ -9,8 +9,7 @@ import numpy as np
 from dash import Dash, html, dcc
 from dash.dependencies import Input, Output, State
 
-
-import base
+from . import base
 
 
 class FrontEnd(base.BaseLogger):

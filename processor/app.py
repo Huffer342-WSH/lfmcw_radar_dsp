@@ -1,26 +1,44 @@
-import multiprocessing
-import logging
+import multiprocessing, logging
 
-from frontend import FrontEnd
-from backend import BackEnd
-from usart import Usart
+from .frontend import FrontEnd
+from .backend import BackEnd
+from .usart import Usart
 
+
+class Application:
+    def __init__(self):
+        # 初始化日志设置
+        logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+        # 初始化通信资源
+        self.message_queue = multiprocessing.Queue(maxsize=3)
+        self.event_shutdown = multiprocessing.Event()
+        self.para, self.son = multiprocessing.Pipe(duplex=True)
+
+        # 初始化串口配置
+        self.serial_config = {"name": "/dev/ttyUSB2", "baudrate": 3250000}
+        self.serial_config["name"] = Usart.select_serial_port()
+
+        # 创建前端和后端对象
+        self.app_wrapper = FrontEnd(queue=self.message_queue, conn=self.para)
+        self.backend = BackEnd(message_queue=self.message_queue, conn=self.son, event_shutdown=self.event_shutdown, serial_config=self.serial_config)
+        self.backend.logger.setLevel(logging.INFO)
+
+    def start(self, debug=False):
+        """启动应用程序"""
+        try:
+            self.backend.start()  # 启动后端进程
+            self.app_wrapper.run(debug=debug)  # 运行前端应用
+        finally:
+            self.shutdown()
+
+    def shutdown(self):
+        """关闭应用程序"""
+        self.event_shutdown.set()  # 通知后端进程关闭
+        self.backend.join()  # 等待后端进程结束
+
+
+# 如果此文件被直接运行
 if __name__ == "__main__":
-
-    # 关闭Dash的日志
-    logging.getLogger("werkzeug").setLevel(logging.WARNING)
-
-    message_queue = multiprocessing.Queue(maxsize=3)
-    event_shutdown = multiprocessing.Event()
-    para, son = multiprocessing.Pipe(duplex=True)
-    serial_config = {"name": "/dev/ttyUSB2", "baudrate": 3250000}
-    # serial_config["name"] = Usart.select_serial_port()
-
-    app_wrapper = FrontEnd(queue=message_queue, conn=para)
-    backend = BackEnd(message_queue=message_queue, conn=son, event_shutdown=event_shutdown, serial_config=serial_config)
-    backend.logger.setLevel(logging.INFO)
-    backend.start()
-
-    app_wrapper.run(debug=False)
-    event_shutdown.set()
-    backend.join()
+    app = Application()
+    app.start(debug=False)

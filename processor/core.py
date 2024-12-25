@@ -1,26 +1,23 @@
 # %%
-import sys
-
-sys.path.append("../")
 
 import typing
+import datetime
+from itertools import chain
+from dataclasses import dataclass
+from collections import deque
+
 import numpy as np
 import scipy.constants
 import scipy.io
 from sklearn.cluster import DBSCAN
-from dataclasses import dataclass
 
 from sklearn.cluster import DBSCAN
-from collections import deque
 
+import sys, pathlib
+
+sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))  # 添加myRadar库
 from myRadar.cfar import cfar_2d, cfar_result_filtering
 from myRadar.base import BaseBasicData
-
-
-from itertools import chain
-
-
-import datetime
 
 
 # %%

@@ -8,22 +8,21 @@ import queue
 import datetime
 import logging
 from collections import deque
-
 from itertools import chain
 
+
 import numpy as np
-from scipy.fft import fftshift
 import scipy.io
 import scipy.constants
+from scipy.fft import fftshift
 
 import plotly.graph_objects as go
 
-import base
-from mcu_packet import McuPacket_Manager
-import datapacket
-from usart import Usart
-
-from core import Processor, RadarInitParam, RadarConfig, RadarCFARConfig, RadarCFARFilterConfig, TrackConfig, DBSCANConfig, TrackedTarget, Tracker
+from . import base
+from .mcu_packet import McuPacket_Manager
+from . import datapacket
+from .usart import Usart
+from .core import Processor, RadarInitParam, RadarConfig, RadarCFARConfig, RadarCFARFilterConfig, TrackConfig, DBSCANConfig, TrackedTarget
 
 
 class BackEnd(multiprocessing.Process, base.BaseLogger):
