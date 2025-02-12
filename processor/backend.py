@@ -263,11 +263,6 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         savedata["RDM"] = np.stack([i["Signal2DFFT"] for i in temp])
         savedata.update(self.processor.param.__dict__)
         savedata["numFrame"] = len(temp)
-
-        for i in temp:
-            if type(i) != dict():
-                self.log_warning(f"frame type error {type(i)}")
-
         savedata["frames"] = temp
 
         # 保存文件

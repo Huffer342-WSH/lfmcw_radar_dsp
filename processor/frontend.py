@@ -56,7 +56,7 @@ class FrontEnd(base.BaseLogger):
         )
         def update_dashboard(n):
             if not self.message_queue.empty():
-                self.fig_buffer = self.message_queue.get_nowait()
+                self.fig_buffer = self.message_queue.get()
 
             # 图1  距离-时间
 
