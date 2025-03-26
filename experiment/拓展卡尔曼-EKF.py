@@ -28,14 +28,16 @@ np.set_printoptions(precision=3, suppress=True)
 # 导入轨迹
 timeScale = 0.1
 posScale = 10
-stride = 20
+stride = 5
 file = "../data/mouse_trajectory_2024_09_13_17_22_54.mat"
 
 
 target_pos = scipy.io.loadmat(file)["positions"][::stride] * posScale
+# target_pos = target_pos[:20]
 num_steps = len(target_pos)
-start_time = datetime.now().replace(microsecond=0)
-timesteps = np.array([start_time + timedelta(seconds=i * timeScale) for i in range(num_steps)])
+start_time = datetime(2000, 1, 1, 0, 0, 0, 0)
+timesteps = np.array([start_time + timedelta(seconds=i * timeScale) for i in range(1, num_steps + 1)])
+
 truth_state_vector = np.zeros((num_steps, 6))
 truth_state_vector[:, :3] = target_pos[:, :3]
 truth_state_vector[:-1, 3:6] = (truth_state_vector[1:, 0:3] - truth_state_vector[:-1, 0:3]) / timeScale
@@ -43,10 +45,11 @@ truth_state_vector = truth_state_vector[:-1, [0, 3, 1, 4, 2, 5]]
 
 
 # 设置参数
-clutter_num_max = 10
-velocity_noise_coef = 20
-meas_noise_covar = np.diag([0, 5 / 180 * np.pi, 0.2, 0.01]) ** 2
-
+q = 1
+P0 = np.diag([1.5, 0.5, 1.5, 0.5, 1.5, 0.5])
+x0 = truth_state_vector[0].reshape(-1, 1)
+R0 = np.diag([0, 5 / 180 * np.pi, 0.2, 0.01]) ** 2
+z_lizt = []
 
 # %%
 # 设置状态转移模型
@@ -54,9 +57,7 @@ meas_noise_covar = np.diag([0, 5 / 180 * np.pi, 0.2, 0.01]) ** 2
 
 from stonesoup.models.transition.linear import CombinedLinearGaussianTransitionModel, ConstantVelocity
 
-transition_model = CombinedLinearGaussianTransitionModel(
-    [ConstantVelocity(velocity_noise_coef), ConstantVelocity(velocity_noise_coef), ConstantVelocity(velocity_noise_coef)]
-)
+transition_model = CombinedLinearGaussianTransitionModel([ConstantVelocity(q), ConstantVelocity(q), ConstantVelocity(q)])
 
 # 设置测量模型
 # 测量向量为 [phi,r,vr] 即[方位角，径向距离，径向速度]
@@ -69,7 +70,7 @@ from stonesoup.types.state import State
 measurement_model = CartesianToElevationBearingRangeRate(
     ndim_state=6,
     mapping=[0, 2, 4],
-    noise_covar=meas_noise_covar,
+    noise_covar=R0,
 )
 
 from scipy.linalg import inv
@@ -115,14 +116,12 @@ from stonesoup.updater.kalman import ExtendedKalmanUpdater
 predictor = ExtendedKalmanPredictor(transition_model)
 updater = ExtendedKalmanUpdater(measurement_model)
 
-# %%
-# 运行拓展kalnman滤波器
 from stonesoup.types.state import GaussianState
 from stonesoup.types.hypothesis import SingleHypothesis
 from stonesoup.types.track import Track
 
 
-prior = GaussianState(truth[0].state_vector, np.diag([1.5, 0.5, 1.5, 0.5, 1.5, 0.5]), timestamp=start_time - timedelta(seconds=timeScale))
+prior = GaussianState(x0, P0, timestamp=start_time)
 track = Track()
 post = prior
 for measurement in measurements:
@@ -137,14 +136,14 @@ for measurement in measurements:
 import myRadar.track.kalman as mk
 import myRadar.track.models as mm
 
-efk_predictor = mk.KalmanPredictor(mm.TransitionModel(velocity_noise_coef))
-efk_updater = mk.KalmanUpdater(mm.MeasurementModel(meas_noise_covar))
+efk_predictor = mk.KalmanPredictor(mm.TransitionModel(q))
+efk_updater = mk.KalmanUpdater(mm.MeasurementModel(R0))
 _track = Track()
 
-post = mk.GaussianState(prior.state_vector, prior.covar, -timeScale)
+post = mk.GaussianState(prior.state_vector, prior.covar, start_time)
 for i, measurement in enumerate(measurements):
-    _prediction = efk_predictor.predict(post, timestamp=i * timeScale)
-    _hypothesis = mk.Hypothesis(_prediction, measurement.state_vector)
+    _prediction = efk_predictor.predict(post, timestamp=timesteps[i])
+    _hypothesis = mk.Hypothesis(prior_state=post, prediction=_prediction, measurement=measurement.state_vector)
     post = efk_updater.update(_hypothesis)
     _track.append(GaussianState(state_vector=post.state_vector, covar=post.covar, timestamp=timesteps[i]))
 
@@ -161,3 +160,53 @@ plotter.plot_tracks(_track, [0, 2], track_label="User EKF", marker=dict(symbol="
 plotter.fig
 
 # %%
+""" 保存动画 """
+# from drawhelp.io import plotly_fig_to_video_joblib
+# plotly_fig_to_video_joblib(plotter.fig, "output_video.mp4", width=1080, height=600)
+
+
+# %%
+""" 打印成C语言数组 """
+from myRadar.tool.print_c import numpy_to_c_array
+
+z_list = np.array([m.state_vector[1:4] for m in measurements]).reshape(-1, 3)
+c_timestamps = np.array([t.total_seconds() * 1000 for t in (timesteps - start_time)])
+x_list = np.array([m.state_vector[0:4] for m in track]).reshape(-1, 4)
+
+lines = [
+    "//测量值数量",
+    f"static const int N = {len(z_list)};",
+    "",
+    "//状态向量",
+    numpy_to_c_array(x0[:4, 0], "_x0", "double"),
+    "",
+    "//误差协方差",
+    numpy_to_c_array(P0[:4, :4], "_P0", "double"),
+    "",
+    "//状态转移噪声因子",
+    f"static const double _q = {q};",
+    "",
+    "//测量噪声协方差",
+    numpy_to_c_array(R0[1:, 1:], "_R0", "double"),
+    "",
+    "//时间戳",
+    numpy_to_c_array(c_timestamps, "timestamps", "uint32_t"),
+    "",
+    "//测量值列表",
+    numpy_to_c_array(z_list, "_z_list", "double"),
+    "",
+    "//滤波后状态向量",
+    numpy_to_c_array(x_list, "_x_list", "double")
+]
+
+# 拼接所有行
+output_text = "\n".join(lines)
+
+# 输出：可选择打印到终端或者写入到文件
+# 打印到终端
+print(output_text)
+
+# 如果需要写入到文件，取消下面代码的注释
+# with open("output.data", "w") as f:
+#     f.write(output_text)
+#%%
