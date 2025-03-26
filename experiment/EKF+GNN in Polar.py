@@ -269,10 +269,16 @@ class LifeCycle(Printable):
 class myTracker:
     next_uuid = 0
 
-    def __init__(self, measurement):
-        self.uuid = myTracker.next_uuid
+    def __init__(self, measurement, timestamp: datetime):
         myTracker.next_uuid += 1
 
+        self.uuid = myTracker.next_uuid
+        self.state = self.__clac_init_state(measurement, timestamp)
+        self.life_cycle = LifeCycle(Initiator.initial_score)
+        self.life_cycle.measurements.append(measurement)
+        self.life_cycle.post_measurements.append(measurement)
+
+    def __clac_init_state(self, measurement, timestamp):
         theta, phi, rho, rho_rate = measurement
         x = rho * np.cos(theta) * np.cos(phi)
         y = rho * np.cos(theta) * np.sin(phi)
@@ -281,11 +287,7 @@ class myTracker:
         vy = rho_rate * np.cos(theta) * np.sin(phi)
         vz = rho_rate * np.sin(theta)
         state = mk.GaussianState(state_vector=np.array([x, vx, y, vy, z, vz]).reshape(-1, 1), covar=np.diag([1, 0.5, 1, 0.5, 1, 0.5]) ** 2, timestamp=timestamp)
-
-        self.state = state
-        self.life_cycle = LifeCycle(Initiator.initial_score)
-        self.life_cycle.measurements.append(measurement)
-        self.life_cycle.post_measurements.append(measurement)
+        return state
 
 
 class Associator(Printable):
@@ -336,6 +338,12 @@ class Associator(Printable):
                 print(f"目标 {targets[row_map[i]].uuid}:\n {targets[row_map[i]].state.state_vector} \n  关联测量 {measurements[j]}")
         unassociated_measurements = [m for i, m in enumerate(measurements) if i not in col4row]
 
+        # 按照假设更新每一个目标
+        for target, hypothesis in zip(targets, hypotheses):
+            if hypothesis.measurement is None:
+                target.state = hypothesis.prediction
+            else:
+                target.state = self.updater.update(hypothesis)
         return hypotheses, unassociated_measurements
 
 
@@ -368,7 +376,7 @@ class Initiator(Printable):
 
     def updateLifeCycle(self, life_cycle: LifeCycle, hypothesis: mk.Hypothesis, post: mk.GaussianState):
         score = 0
-        dt = hypothesis.prediction.timestamp - hypothesis.prior_state.timestamp
+        dt = (hypothesis.prediction.timestamp - hypothesis.prior_state.timestamp).total_seconds()
         if hypothesis.measurement is None:
             # 关联失败
             if life_cycle.unassociated_time > self.unassociated_time:
@@ -431,7 +439,7 @@ class Initiator(Printable):
             # 速度慢的测量值不用于创建新目标
             if np.abs(rho_rate) < 0.1:
                 continue
-            unconfirmed_targets.append(myTracker(measurement))
+            unconfirmed_targets.append(myTracker(measurement, timestamp=timestamp))
 
 
 class Deleter(Printable):
@@ -451,7 +459,7 @@ class Deleter(Printable):
 
     def updateLifeCycle(self, life_cycle: LifeCycle, hypothesis: mk.Hypothesis, post: mk.GaussianState):
         score = 0
-        dt = hypothesis.prediction.timestamp - hypothesis.prior_state.timestamp
+        dt = (hypothesis.prediction.timestamp - hypothesis.prior_state.timestamp).total_seconds()
         if hypothesis.measurement is None:
             # 关联失败
             life_cycle.unassociated_time += dt
@@ -501,13 +509,6 @@ def track(associator, deleter, initiator, tracked_targets, unconfirmed_targets, 
     # 数据关联，得到假设和未关联的测量
     hypotheses, unassociated_measurements = associator.associate(tracked_targets, measurements, timestamp, missed_distance)
 
-    # 按照假设更新每一个目标
-    for target, hypothesis in zip(tracked_targets, hypotheses):
-        if hypothesis.measurement is None:
-            target.state = hypothesis.prediction
-        else:
-            target.state = ekf_updater.update(hypothesis)
-
     # 删除无效目标
     deleter.delete(tracked_targets, hypotheses)
 
@@ -549,7 +550,7 @@ unconfirmed_targets = []  # 航迹起始阶段的目标
 for n, measurements in enumerate(all_measurements[:]):
     print(f"\r\n\r\n时间 {timestamps[n]}")
     measurements = [m.state_vector.astype(np.float64) for m in measurements]
-    timestamp = (timestamps[n] - timestamps[0]).total_seconds()
+    timestamp = timestamps[n]
 
     # 跟踪
     track(associator, _deleter, _initiator, tracked_targets, unconfirmed_targets, measurements, missed_distance, timestamp)
@@ -580,6 +581,6 @@ plotter.plot_tracks(trajectorys.values(), [0, 2], track_label="User-confirmed")
 plotter.plot_tracks(unconfirmed_trajectorys.values(), [0, 2], track_label="User-unconfirmed", marker=dict(symbol="x", size=8))
 plotter.fig
 # %%
-
-
+import drawhelp.io
+drawhelp.io.plotly_fig_to_video()
 # %%
