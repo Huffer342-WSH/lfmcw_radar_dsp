@@ -21,12 +21,12 @@ class RadarParam:
 
     frequency: float
     bandwidth: float
-    timeChrip: float
-    timeChripGap: float
+    timeChirp: float
+    timeChirpGap: float
     timeFrameGap: float
     numPoint: int
     numRangeBin: int
-    numChrip: int
+    numChirp: int
     numChannel: int
     # 以下参数为衍生参数
     timeFrameVaild: float = field(init=False)
@@ -34,7 +34,7 @@ class RadarParam:
     resVelocity: float = field(init=False)
 
     def __post_init__(self):
-        self.timeFrameVaild = (self.timeChrip + self.timeChripGap) * self.numChrip
+        self.timeFrameVaild = (self.timeChirp + self.timeChirpGap) * self.numChirp
         self.resRange = scipy.constants.c / (2 * self.bandwidth)
         self.resVelocity = scipy.constants.c / (2 * self.frequency * self.timeFrameVaild)
 
@@ -69,12 +69,12 @@ class LFMCWRadarProcessor:
     commonParam24G = RadarParam(
         frequency=24e9,
         bandwidth=250e6,
-        timeChrip=420e-6,
-        timeChripGap=1200e-6,
+        timeChirp=420e-6,
+        timeChirpGap=1200e-6,
         timeFrameGap=3000e-6,
         numPoint=128,
         numRangeBin=25,
-        numChrip=32,
+        numChirp=32,
         numChannel=2,
     )
 
@@ -104,10 +104,10 @@ class LFMCWRadarProcessor:
         # 0.检查输入的RDM的形状和数据类型
         # 由于在实际应用中，距离维度的FFT先计算，速度维度的FFT后计算，所以往往单通道RDM的第一个维度是距离，第二个维度是速度。
         # 此外，输入的RDM需要是没经过速度维度fftshift的，因为实际应用中，不会浪费时间去交换内存。
-        if rdm.shape != (self.param.numChannel, self.param.numRangeBin, self.param.numChrip):
+        if rdm.shape != (self.param.numChannel, self.param.numRangeBin, self.param.numChirp):
             raise ValueError(
-                f"[LFMCWRadarProcessor]: 输入的RDM形状异常，期望的rdm.shape==({self.param.numChannel}, {self.param.numRangeBin}, {self.param.numChrip}),"
-                " 分别对应{self.param.numChannel}个通道，{self.param.numRangeBin}个距离单元，{self.param.numChrip}个脉冲。\n 但实际输入的rdm.shape=={rdm.shape}"
+                f"[LFMCWRadarProcessor]: 输入的RDM形状异常，期望的rdm.shape==({self.param.numChannel}, {self.param.numRangeBin}, {self.param.numChirp}),"
+                " 分别对应{self.param.numChannel}个通道，{self.param.numRangeBin}个距离单元，{self.param.numChirp}个脉冲。\n 但实际输入的rdm.shape=={rdm.shape}"
             )
         if rdm.dtype != np.complex128 and rdm.dtype != np.complex64:
             raise ValueError(
@@ -163,7 +163,7 @@ class LFMCWRadarProcessor:
         for index in indices:
             point = RadarPointCloud(
                 radius=index[0] * self.param.resRange,
-                radialVelocity=(index[1] - self.param.numChrip / 2) * self.param.resVelocity,
+                radialVelocity=(index[1] - self.param.numChirp / 2) * self.param.resVelocity,
                 amplitude=ampSpec2D[tuple(index)],
                 theta=angleDualCh(rdm[0, index[0], index[1]], rdm[1, index[0], index[1]]),
             )
@@ -175,8 +175,8 @@ class LFMCWRadarProcessor:
         # print(f"平均幅度:{np.mean(ampSpec2D)}")
         return points
 
-    def updateStaticClutter(self, ChripMean, weight=0.5):
-        self.staticClutter = ChripMean * (1 - weight) + self.staticClutter * weight
+    def updateStaticClutter(self, ChirpMean, weight=0.5):
+        self.staticClutter = ChirpMean * (1 - weight) + self.staticClutter * weight
 
     def getPointsPosition(self):
         return [[p.radius * np.cos(p.theta), p.radius * np.sin(p.theta)] for p in self.pointClouds]
@@ -201,17 +201,17 @@ radarDataCube = mat["radarDataCube"]
 radarParam = RadarParam(
     frequency=mat["frequency"][0, 0],
     bandwidth=mat["bandwidth"][0, 0],
-    timeChrip=mat["timeChrip"][0, 0],
-    timeChripGap=mat["timeChripGap"][0, 0],
+    timeChirp=mat["timeChirp"][0, 0],
+    timeChirpGap=mat["timeChirpGap"][0, 0],
     timeFrameGap=mat["timeFrameGap"][0, 0],
     numPoint=mat["numPoint"][0, 0],
     numRangeBin=35,
-    numChrip=mat["numChrip"][0, 0],
+    numChirp=mat["numChirp"][0, 0],
     numChannel=mat["numChannel"][0, 0],
 )
 referPositionList = mat["tergatTrajectory"][:, :, :2].transpose(1, 0, 2)
 
-chripMean = fft2(radarDataCube[0], axes=(-2, -1))[:, 0, :]
+chirpMean = fft2(radarDataCube[0], axes=(-2, -1))[:, 0, :]
 
 # %%
 # 测试
@@ -223,7 +223,7 @@ if ENABLE_CPROFILE:
 
 # 创建对象
 pointsPositionList = []
-core = LFMCWRadarProcessor(RadarParam=radarParam, RadarConfig=LFMCWRadarProcessor.commonConfig, staticClutter=chripMean[:, : radarParam.numRangeBin])
+core = LFMCWRadarProcessor(RadarParam=radarParam, RadarConfig=LFMCWRadarProcessor.commonConfig, staticClutter=chirpMean[:, : radarParam.numRangeBin])
 
 # 测试类
 # rdm = fftshift(fft2(radarDataCube[200], axes=(-2, -1)), axes=-2)[:, :, :128]

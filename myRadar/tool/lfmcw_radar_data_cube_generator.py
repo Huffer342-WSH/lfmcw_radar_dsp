@@ -6,7 +6,7 @@ import scipy.constants
 import joblib
 
 
-def generateRadarDataCube(frequency, bandwidth, timeChrip, timeIdle, timeNop, freqSampling, numSampling, numChrip, numFrame, posTx, posRx, targetsInfo):
+def generateRadarDataCube(frequency, bandwidth, timeChirp, timeIdle, timeNop, freqSampling, numSampling, numChirp, numFrame, posTx, posRx, targetsInfo):
     """
     生成LFMCW雷达数据立方体
 
@@ -16,18 +16,18 @@ def generateRadarDataCube(frequency, bandwidth, timeChrip, timeIdle, timeNop, fr
         载波频率
     bandwidth : float
         带宽
-    timeChrip : float
-        一个chrip的持续时间
+    timeChirp : float
+        一个chirp的持续时间
     timeIdle : float
-        两个chrip之间的时间间隔
+        两个chirp之间的时间间隔
     timeNop : float
         一帧数据的结尾
     freqSampling : float
         采样频率
     numSampling : int
         采样点数
-    numChrip : int
-        chrip个数
+    numChirp : int
+        chirp个数
     numFrame : int
         帧数
     posTx : array_like
@@ -40,7 +40,7 @@ def generateRadarDataCube(frequency, bandwidth, timeChrip, timeIdle, timeNop, fr
     Returns
     -------
     signal : array_like
-        LFMCW雷达数据立方体，4-D数组，四个维度分别为(帧序号,通道序号,chrip序号,采样点序号)
+        LFMCW雷达数据立方体，4-D数组，四个维度分别为(帧序号,通道序号,chirp序号,采样点序号)
 
     Examples
     --------
@@ -49,27 +49,27 @@ def generateRadarDataCube(frequency, bandwidth, timeChrip, timeIdle, timeNop, fr
     numTx = len(posTx)
     numRx = len(posRx)
 
-    unusedChrip = timeChrip - (numSampling - 1) / freqSampling
+    unusedChirp = timeChirp - (numSampling - 1) / freqSampling
     axisTime = (
-        np.tile(np.linspace(0, numSampling / freqSampling, numSampling, endpoint=False), numChrip * numFrame)
-        + np.repeat(np.linspace(0, numChrip * numFrame * (timeIdle + timeChrip), numChrip * numFrame, endpoint=False), numSampling)
-        + np.repeat(np.linspace(0, numFrame * timeNop, numFrame, endpoint=False), numSampling * numChrip)
-    ) + unusedChrip / 2
+        np.tile(np.linspace(0, numSampling / freqSampling, numSampling, endpoint=False), numChirp * numFrame)
+        + np.repeat(np.linspace(0, numChirp * numFrame * (timeIdle + timeChirp), numChirp * numFrame, endpoint=False), numSampling)
+        + np.repeat(np.linspace(0, numFrame * timeNop, numFrame, endpoint=False), numSampling * numChirp)
+    ) + unusedChirp / 2
 
-    def clacPhase(axisT, fc, timeChrip, timeIdle, timeNop, numChrip, slope):
-        t = (axisT % ((timeChrip + timeIdle) * numChrip + timeNop)) % (timeChrip + timeIdle)
+    def clacPhase(axisT, fc, timeChirp, timeIdle, timeNop, numChirp, slope):
+        t = (axisT % ((timeChirp + timeIdle) * numChirp + timeNop)) % (timeChirp + timeIdle)
         phase = 2 * np.pi * t * (fc + 0.5 * slope * t)
         return phase
 
-    def clacPhase_parallel(axisT, fc, timeChrip, timeIdle, timeNop, numChrip, slope):
+    def clacPhase_parallel(axisT, fc, timeChirp, timeIdle, timeNop, numChirp, slope):
         num_slices = joblib.cpu_count() * 8
         axisT_slices = np.array_split(axisT, num_slices)
-        results = joblib.Parallel(n_jobs=-1)(joblib.delayed(clacPhase)(slice_, fc, timeChrip, timeIdle, timeNop, numChrip, slope) for slice_ in axisT_slices)
+        results = joblib.Parallel(n_jobs=-1)(joblib.delayed(clacPhase)(slice_, fc, timeChirp, timeIdle, timeNop, numChirp, slope) for slice_ in axisT_slices)
         return np.concatenate(results)
 
-    phaseTx = clacPhase_parallel(axisTime, frequency, timeChrip, timeIdle, timeNop, numChrip, bandwidth / timeChrip)
+    phaseTx = clacPhase_parallel(axisTime, frequency, timeChirp, timeIdle, timeNop, numChirp, bandwidth / timeChirp)
 
-    signal = np.zeros((numTx * numRx, numSampling * numChrip * numFrame), dtype=np.complex128)
+    signal = np.zeros((numTx * numRx, numSampling * numChirp * numFrame), dtype=np.complex128)
 
     tragetsPos = []
     for target in targetsInfo:
@@ -96,10 +96,10 @@ def generateRadarDataCube(frequency, bandwidth, timeChrip, timeIdle, timeNop, fr
                     target["rsc"]
                     / (disTx**2)
                     / (disRx**2)
-                    * np.exp(1j * (phaseTx - clacPhase_parallel(txTimeStamp, frequency, timeChrip, timeIdle, timeNop, numChrip, bandwidth / timeChrip)))
+                    * np.exp(1j * (phaseTx - clacPhase_parallel(txTimeStamp, frequency, timeChirp, timeIdle, timeNop, numChirp, bandwidth / timeChirp)))
                 )
     tragetsPos = np.array(tragetsPos)
-    signal = signal.reshape(numTx * numRx, numFrame, numChrip, numSampling).swapaxes(0, 1)
+    signal = signal.reshape(numTx * numRx, numFrame, numChirp, numSampling).swapaxes(0, 1)
 
     return signal, tragetsPos
 
@@ -114,13 +114,13 @@ if __name__ == "__main__":
 
     frequency = 24e9
     bandwidth = 1000e6
-    timeChrip = 150e-6
+    timeChirp = 150e-6
     timeIdle = 200e-6
     timeNop = 2000e-6  #
     freqSampling = 1e6
 
     numSampling = 128
-    numChrip = 32
+    numChirp = 32
     numFrame = 10
 
     posTx = np.array([[0, 0, 0]])
@@ -138,16 +138,16 @@ if __name__ == "__main__":
     targetsInfo = [target0, target1]
 
     signal, _ = generateRadarDataCube(
-        frequency, bandwidth, timeChrip, timeIdle, timeNop, freqSampling, numSampling, numChrip, numFrame, posTx, posRx, targetsInfo
+        frequency, bandwidth, timeChirp, timeIdle, timeNop, freqSampling, numSampling, numChirp, numFrame, posTx, posRx, targetsInfo
     )
 
     frame0 = signal[0, 0, :]
     frame1 = signal[0, 1, :]
 
     # 观察RDM
-    resRange = scipy.constants.c / (2 * bandwidth * (numSampling / freqSampling) / timeChrip)
+    resRange = scipy.constants.c / (2 * bandwidth * (numSampling / freqSampling) / timeChirp)
     axis_x = np.arange(0, 128) * resRange
-    axis_y = np.arange(-16, 16) * scipy.constants.c / (2 * frequency * (timeIdle + timeChrip) * 31)
+    axis_y = np.arange(-16, 16) * scipy.constants.c / (2 * frequency * (timeIdle + timeChirp) * 31)
     spec = np.abs(np.fft.fftshift(np.fft.fft2(frame0), axes=0))
     # dh.draw_spectrum(spec, x=axis_x, y=axis_y)
     dh.draw_spectrum(spec)

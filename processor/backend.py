@@ -60,7 +60,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
 
         self.numSample = 0
         self.numRangeBin = 15
-        self.numChrip = 0
+        self.numChirp = 0
 
         self.__tempFrame = {}
 
@@ -81,12 +81,12 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
                 wavelength=scipy.constants.c / 24.125e9,
                 bandwidth=204e6,
                 rx_antenna_spacing=6.98e-3,
-                timeChrip=2.461538e-5,
-                timeChripGap=1.310367e-03,
+                timeChirp=2.461538e-5,
+                timeChirpGap=1.310367e-03,
                 timeFrameGap=4.561123e-03,
                 numChannel=2,
                 numRangeBin=16,
-                numChrip=64,
+                numChirp=64,
                 numMaxCfarPoints=64,
                 numMaxCachedFrame=8,
                 numInitialMultiMeas=4,

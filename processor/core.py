@@ -371,12 +371,12 @@ class RadarInitParam:
     wavelength: float  # 波长 (m)
     bandwidth: float  # 带宽 (Hz)
     rx_antenna_spacing: float  # 接收天线间距 (m)
-    timeChrip: float  # Chrip 调频时长 (s)
-    timeChripGap: float  # Chrip 间距，从一个 Chrip 结束到下一个 Chrip 开始 (s)
+    timeChirp: float  # Chirp 调频时长 (s)
+    timeChirpGap: float  # Chirp 间距，从一个 Chirp 结束到下一个 Chirp 开始 (s)
     timeFrameGap: float  # 帧间距，从一个帧结束到下一个帧开始 (s)
     numChannel: int  # 雷达通道数
     numRangeBin: int  # 距离单元数
-    numChrip: int  # Chrip 数
+    numChirp: int  # Chirp 数
     numMaxCfarPoints: int  # CFAR 检测的最大点数，超出上限时较远距离的点会被丢弃
     numMaxCachedFrame: int  # 缓存帧的最大数量，用于叠加多帧聚类
     numInitialMultiMeas: int  # 缓存多帧量测值的数组的初始大小
@@ -388,18 +388,18 @@ class RadarParam:
     # 输入参数
     wavelength: float  # 单位: m, 雷达波长，例如 24GHz 雷达波长为 12.42663038e-3
     bandwidth: float  # 单位: Hz, 雷达有效带宽
-    timeChrip: float  # 单位: s, 每个 Chrip 的时间
-    timeChripGap: float  # 单位: s, Chrip 间隔
+    timeChirp: float  # 单位: s, 每个 Chirp 的时间
+    timeChirpGap: float  # 单位: s, Chirp 间隔
     timeFrameGap: float  # 单位: s, 帧间隔
 
     numChannel: int  # 雷达通道数
     numSample: int  # 采样点数
     numRangeBin: int  # 距离单元数量
-    numChrip: int  # Chrip 数
+    numChirp: int  # Chirp 数
 
     # 衍生参数
-    timeChripTotal: float  # 单位: s, 一个完整 Chrip 的时间 (timeChrip + timeChripGap)
-    timeFrame: float  # 单位: s, 一帧的有效时间 (numChrip * timeChripFull)
+    timeChirpTotal: float  # 单位: s, 一个完整 Chirp 的时间 (timeChirp + timeChirpGap)
+    timeFrame: float  # 单位: s, 一帧的有效时间 (numChirp * timeChirpFull)
     timeFrameTotal: float  # 单位: s, 一帧的总时间 (timeFrameValid + timeFrameGap)
     resRange: float  # 单位: m, 距离分辨率
     resVelocity: float  # 单位: m/s, 速度分辨率
@@ -470,20 +470,20 @@ class RadarConfig:
 class Processor:
 
     def __init__(self, param: RadarInitParam, config: RadarConfig):
-        timeChripTotal = param.timeChrip + param.timeChripGap
-        timeFrame = timeChripTotal * param.numChrip
+        timeChirpTotal = param.timeChirp + param.timeChirpGap
+        timeFrame = timeChirpTotal * param.numChirp
         timeFrameTotal = timeFrame + param.timeFrameGap
         self.param = RadarParam(
             wavelength=param.wavelength,
             bandwidth=param.bandwidth,
-            timeChrip=param.timeChrip,
-            timeChripGap=param.timeChripGap,
+            timeChirp=param.timeChirp,
+            timeChirpGap=param.timeChirpGap,
             timeFrameGap=param.timeFrameGap,
             numChannel=param.numChannel,
-            numSample=param.numRangeBin * param.numChrip,
+            numSample=param.numRangeBin * param.numChirp,
             numRangeBin=param.numRangeBin,
-            numChrip=param.numChrip,
-            timeChripTotal=timeChripTotal,
+            numChirp=param.numChirp,
+            timeChirpTotal=timeChirpTotal,
             timeFrame=timeFrame,
             timeFrameTotal=timeFrameTotal,
             resRange=scipy.constants.c / (2 * param.bandwidth),
@@ -491,7 +491,7 @@ class Processor:
             lambda_over_d=param.wavelength / param.rx_antenna_spacing,
         )
         self.basic = RadarBasicData(
-            mag=np.zeros(shape=(param.numRangeBin, param.numChrip)),
+            mag=np.zeros(shape=(param.numRangeBin, param.numChirp)),
             multi_frame_meas=deque(maxlen=param.numMaxCachedFrame),
             measurements=[],
         )

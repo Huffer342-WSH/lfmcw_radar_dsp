@@ -30,7 +30,7 @@ import drawhelp.draw as dh
 	- timestamps： (N,) 时间戳
 	- positions：(N,3) 目标位置
     
-2. 调制波形为LFMCW，除了基本的中心频率、调制带宽和调制时间外，还包含一些额外的参数：每个Frame包含的Chrip数，总Frame数，两个Chrip之间的间隔以及两个Frame之间的间隔，这些是实际的雷达中配置中需要的。
+2. 调制波形为LFMCW，除了基本的中心频率、调制带宽和调制时间外，还包含一些额外的参数：每个Frame包含的Chirp数，总Frame数，两个Chirp之间的间隔以及两个Frame之间的间隔，这些是实际的雷达中配置中需要的。
 3. 天线位置包含发射天线的位置和接收天线的位置，每一个天线都用是一个(1,3)的数组，多个天线组成一个(N,3)的数组表示
 4. 采样配置包含采样频率、以及每个调制周期的采样点数、
 """
@@ -49,15 +49,15 @@ numTargets = len(targetsInfo)
 # 配置波形
 frequency = 24e9
 bandwidth = 250e6
-timeChrip = 150e-6  # chirp调频的持续时间，和需要大于numSampling/freqSampling
-timeIdle = 200e-6  # 每一个Chrip后的空闲时间，或者说是一帧中，两个chrip的间隔
+timeChirp = 150e-6  # chirp调频的持续时间，和需要大于numSampling/freqSampling
+timeIdle = 200e-6  # 每一个Chirp后的空闲时间，或者说是一帧中，两个chirp的间隔
 timeNop = 2000e-6  # 一帧结束后的空闲时间
-numChrip = 32
+numChirp = 32
 
 timeMin = 60
 for i in targetsInfo:
     timeMin = min(timeMin, np.max(i["times"]))
-numFrame = int(timeMin / ((timeChrip + timeIdle) * numChrip + timeNop))
+numFrame = int(timeMin / ((timeChirp + timeIdle) * numChirp + timeNop))
 
 # 配置天线
 posTx = np.array([[0, 0, 0]])
@@ -72,11 +72,11 @@ print(f"numFrame: {numFrame}")
 
 # 生成数据
 radarDataCube, posSeriesTargetsRaw = generateRadarDataCube(
-    frequency, bandwidth, timeChrip, timeIdle, timeNop, freqSampling, numSampling, numChrip, numFrame, posTx, posRx, targetsInfo
+    frequency, bandwidth, timeChirp, timeIdle, timeNop, freqSampling, numSampling, numChirp, numFrame, posTx, posRx, targetsInfo
 )
-posSeriesTargets_FrameMean = np.mean(posSeriesTargetsRaw.reshape((posSeriesTargetsRaw.shape[0], -1, numChrip * numSampling, 3)), axis=2)
+posSeriesTargets_FrameMean = np.mean(posSeriesTargetsRaw.reshape((posSeriesTargetsRaw.shape[0], -1, numChirp * numSampling, 3)), axis=2)
 
-resRange = scipy.constants.c / (2 * bandwidth * (numSampling / freqSampling) / timeChrip)
+resRange = scipy.constants.c / (2 * bandwidth * (numSampling / freqSampling) / timeChirp)
 
 # %% 保存数据
 scipy.io.savemat(
@@ -84,13 +84,13 @@ scipy.io.savemat(
     mdict=dict(
         tergatTrajectory=posSeriesTargets_FrameMean,
         radarDataCube=radarDataCube,
-        timeChrip=timeChrip,
-        timeChripGap=timeIdle,
+        timeChirp=timeChirp,
+        timeChirpGap=timeIdle,
         timeFrameGap=timeNop,
         frequency=frequency,
-        bandwidth=bandwidth * (numSampling / freqSampling) / timeChrip,
+        bandwidth=bandwidth * (numSampling / freqSampling) / timeChirp,
         numPoint=numSampling,
-        numChrip=numChrip,
+        numChirp=numChirp,
         numFrame=numFrame,
         numChannel=2,
     ),
@@ -106,7 +106,7 @@ def frameProcess_doa_phase(frames):
     """处理一帧数据，输出直角坐标系的检测结果
 
     Args:
-        frames (np.ndarray): (2,numChrip,numFrame),一帧数据
+        frames (np.ndarray): (2,numChirp,numFrame),一帧数据
 
     Returns:
         点云: (N,2)，第一列为X，第二列为Y
@@ -193,7 +193,7 @@ def detectTarget_RDMAndPhaseDiff(frames, resRange, resVelocity, eps):
     Parameters
     ----------
     frames : 3D array
-        3维数组，shape=(numChannel, numChrip, numSampling)，雷达数据立方体
+        3维数组，shape=(numChannel, numChirp, numSampling)，雷达数据立方体
     resRange : float
         距离分辨率
     resVelocity : float
@@ -248,7 +248,7 @@ def detectTarget_RangeFFTAndPhaseDiff(frames, resRange, resVelocity, eps):
     Parameters
     ----------
     frames : 3D array
-        3D array，shape=(numChannel, numChrip, numSampling), numChannel为通道数，numChrip为chrip数,numSampling为采样点数
+        3D array，shape=(numChannel, numChirp, numSampling), numChannel为通道数，numChirp为chirp数,numSampling为采样点数
     resRange : float
         距离分辨率
     resVelocity : float

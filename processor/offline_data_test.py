@@ -43,14 +43,14 @@ numFrame = file["numFrame"][0, 0]
 numChannel = file["numChannel"][0, 0]
 numSample = file["numSample"][0, 0]
 numRangeBin = file["numRangeBin"][0, 0]
-numChrip = file["numChrip"][0, 0]
-timeChrip = file["timeChrip"][0, 0]
-timeChripGap = file["timeChripGap"][0, 0]
+numChirp = file["numChirp"][0, 0]
+timeChirp = file["timeChirp"][0, 0]
+timeChirpGap = file["timeChirpGap"][0, 0]
 timeFrameGap = file["timeFrameGap"][0, 0]
 del file
 
-timeChripTotal = timeChrip + timeChripGap
-timeFrame = timeChripTotal * numChrip
+timeChirpTotal = timeChirp + timeChirpGap
+timeFrame = timeChirpTotal * numChirp
 timeFrameTotal = timeFrame + timeFrameGap
 
 resRange = scipy.constants.c / (2 * bandwidth)
@@ -67,12 +67,12 @@ processor = Processor(
         wavelength=scipy.constants.c / frequency,
         bandwidth=bandwidth,
         rx_antenna_spacing=6.98e-3,
-        timeChrip=timeChrip,
-        timeChripGap=timeChripGap,
+        timeChirp=timeChirp,
+        timeChirpGap=timeChirpGap,
         timeFrameGap=timeFrameGap,
         numChannel=numChannel,
         numRangeBin=numRangeBin,
-        numChrip=numChrip,
+        numChirp=numChirp,
         numMaxCfarPoints=64,
         numMaxCachedFrame=8,
         numInitialMultiMeas=4,

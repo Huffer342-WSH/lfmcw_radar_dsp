@@ -26,7 +26,7 @@ import drawhelp.draw as dh
 
 
 def loadmat(file_name):
-    global rdm, numFrame, numChannel, numSample, numRangeBin, numChrip, timeChrip, timeChripGap, timeFrameGap, timeFrame, resRange, resVelocity
+    global rdm, numFrame, numChannel, numSample, numRangeBin, numChirp, timeChirp, timeChirpGap, timeFrameGap, timeFrame, resRange, resVelocity
     file = scipy.io.loadmat(file_name=file_name)
     print(file["INFO"])
     rdm = file["RDM"][1:].transpose(0, 1, 3, 2)
@@ -34,13 +34,13 @@ def loadmat(file_name):
     numChannel = file["numChannel"][0, 0]
     numSample = file["numSample"][0, 0]
     numRangeBin = file["numRangeBin"][0, 0]
-    numChrip = file["numChrip"][0, 0]
-    timeChrip = file["timeChrip"][0, 0]
-    timeChripGap = file["timeChripGap"][0, 0]
+    numChirp = file["numChirp"][0, 0]
+    timeChirp = file["timeChirp"][0, 0]
+    timeChirpGap = file["timeChirpGap"][0, 0]
     timeFrameGap = file["timeFrameGap"][0, 0]
-    timeFrame = (timeChrip + timeChripGap) * numChrip + timeFrameGap
+    timeFrame = (timeChirp + timeChirpGap) * numChirp + timeFrameGap
     resRange = 0.71
-    resVelocity = scipy.constants.c / (24e9 * 2 * (timeChrip + timeChripGap) * numChrip)
+    resVelocity = scipy.constants.c / (24e9 * 2 * (timeChirp + timeChirpGap) * numChirp)
     del file
 
 
@@ -103,7 +103,7 @@ for i in range(numFrame):
                 idxR=p[0],
                 idxV=p[1],
                 radius=p[0] * resRange,
-                radialVelocity=((p[1] + numChrip / 2) % numChrip - numChrip / 2) * resVelocity,
+                radialVelocity=((p[1] + numChirp / 2) % numChirp - numChirp / 2) * resVelocity,
                 amplitude=amp[tuple(p)],
                 snr=snr[tuple(p)],
                 theta=angleDualCh(rdm[i, 0, p[0], p[1]], rdm[i, 1, p[0], p[1]]),
