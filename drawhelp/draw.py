@@ -1,11 +1,6 @@
 import numpy as np
 import plotly.graph_objects as go
 from joblib import Parallel, delayed
-from moviepy.editor import ImageSequenceClip
-import os
-import tkinter as tk
-from tkinter import filedialog
-from tqdm import tqdm
 
 
 def draw_spectrum(spec, x=None, y=None, title: str = "default"):
