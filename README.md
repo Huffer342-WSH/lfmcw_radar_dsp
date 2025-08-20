@@ -1,6 +1,5 @@
 # LFMCW雷达数字信号处理 —— Python
 
-
 ## 索引
 
 ### 1. 辅助功能
@@ -12,3 +11,12 @@
 
 1. [compare_capon_and_phase.py](compare_capon_and_phase.py) 使用真实数据对比1T2R条件下Capon和相位差法
 2. [simulation+1T2R_radar.py](simulation+1T2R_radar.py) 1T2R雷达仿真
+
+
+## Python 环境
+
+```
+ipykernel nbformat numpy scipy scikit-learn dash tqdm stonesoup
+```
+
+其中stonesoup需要使用pip安装（假如你使用的是conda，会找不到这个包）
