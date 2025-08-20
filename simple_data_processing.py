@@ -11,7 +11,7 @@ import copy
 from myRadar.arraysys import angleDualCh
 from myRadar import polar2cart
 from myRadar.cfar import cfar_2d, cfar_1d
-from myRadar.lfmcw_radar_data_cube_generator import generateRadarDataCube
+from myRadar.tool.lfmcw_radar_data_cube_generator import generateRadarDataCube
 from myRadar.cluster import dbscan_selectPoint
 
 import plotly.graph_objects as go
@@ -20,24 +20,35 @@ import drawhelp.draw as dh
 
 # %% 加载数据
 
-file = scipy.io.loadmat(file_name="./data/AT24G_RecordedData_运动人体_长方形轨迹.mat")
+file = scipy.io.loadmat(file_name="./data/RadarData_Simulate.mat")
 
-
-rdm = file["RDM"][1:].transpose(0, 1, 3, 2)
+rdm = file["RDM"].transpose((0, 1, 3, 2))
+bandwidth = file["bandwidth"][0, 0]
 numFrame = file["numFrame"][0, 0] - 1
 numChannel = file["numChannel"][0, 0]
-numSample = file["numSample"][0, 0]
 numRangeBin = file["numRangeBin"][0, 0]
+numSample = file["numSample"][0, 0]
 numChirp = file["numChirp"][0, 0]
 timeChirp = file["timeChirp"][0, 0]
-timeChirpGap = file["timeChirpGap"][0, 0]
 timeFrameGap = file["timeFrameGap"][0, 0]
-timeFrame = (timeChirp + timeChirpGap) * numChirp + timeFrameGap
-resRange = 0.71
-resVelocity = scipy.constants.c / (24e9 * 2 * (timeChirp + timeChirpGap) * numChirp)
+timeFrame = file["timeFrame"][0, 0]
+
+timeFrameFull = timeFrame + timeFrameGap
+
+resRange = scipy.constants.c / (2 * bandwidth)
+resVelocity = scipy.constants.c / (24e9 * 2 * timeFrame)
 
 numTrain = (3, 4)
 numGuard = (2, 4)
+
+
+# scipy.io.savemat(
+#     file_name="a.mat",
+#     mdict=file,
+#     do_compression=True,
+# )
+# %%
+
 del file
 
 
@@ -68,6 +79,8 @@ def deletePoints(pointCloud, amp):
 
 # %%
 """搜索点云"""
+threshold_snr = 1.5
+threshold_amp = 300
 
 ampSpec2DList = np.abs(rdm)
 
@@ -81,7 +94,7 @@ for i in range(numFrame):
     amp = np.sum(ampSpec2DList[i], axis=0)
     _, noise = cfar_2d(amp, numTrain, numGuard, threshold=2, type="GOCA")
     snr = amp / noise
-    potinsCloud = np.argwhere(np.logical_and(snr > 2.5, amp > 1500))
+    potinsCloud = np.argwhere(np.logical_and(snr > threshold_snr, amp > threshold_amp))
     potinsCloud = potinsCloud[potinsCloud[:, 0] != 0]  # 去除零距离
     potinsCloud = potinsCloud[potinsCloud[:, 1] != 0]  # 去除零速度
     a = amp[potinsCloud[:, 0], potinsCloud[:, 1]]
@@ -112,7 +125,7 @@ dh.draw_2d_spectrumlist(ampSpec2DList[::1, 0, :, :], title="幅度谱").show()
 
 # %%
 """ 绘制信噪比 """
-dh.draw_2d_spectrumlist(snrList[::1], title="信噪比").show()
+# dh.draw_2d_spectrumlist(snrList[::1], title="信噪比").show()
 
 # %%
 """ 绘制RDM的CFAR搜索结果 """
@@ -123,8 +136,8 @@ for i in range(numFrame):
     listData.append(data)
 fig = dh.draw_animation(listData, title="RDM的 GOCA-2DCFAR 搜索结果")
 fig.update_layout(
-    xaxis=dict(range=[-1, 17]),
-    yaxis=dict(range=[-1, 33]),
+    xaxis=dict(range=[-1, numRangeBin + 1]),
+    yaxis=dict(range=[-1, numChirp + 1]),
     title="点云",
 )
 fig.show()
@@ -132,18 +145,24 @@ fig.show()
 # %%
 """ 绘制笛卡尔坐标系下的点云 """
 listData = []
+x_max = 0
+y_max = 0
 for i in range(numFrame):
     points = pointCloudList[i]
     x = [p.radius * np.cos(p.theta) for p in points]  #  if p.radialVelocity != 0
     y = [p.radius * np.sin(p.theta) for p in points]
+    if x:
+        x_max = max(x_max, max(x))
+    if y:
+        y_max = max(y_max, max(y))
     data = list()
     data.append(go.Scatter(x=x, y=y, mode="markers", name="Raw"))
     listData.append(data)
 fig = dh.draw_animation(listData, title="点云-笛卡尔坐标系")
 fig.update_layout(
     title="点云",
-    xaxis=dict(title="前后", range=[0, 10], scaleanchor="y", scaleratio=1, constrain="domain"),
-    yaxis=dict(title="左右", range=[-5, 5], scaleanchor="x", scaleratio=1, constrain="domain"),
+    xaxis=dict(title="前后", range=[0, x_max], scaleanchor="y", scaleratio=1, constrain="domain"),
+    yaxis=dict(title="左右", range=[-y_max, y_max], scaleanchor="x", scaleratio=1, constrain="domain"),
 )
 fig.show()
 
@@ -187,8 +206,8 @@ for i in range(numFrame):
 fig = dh.draw_animation(listData, title="目标检测结果——基于RDM+相位差法")
 fig.update_layout(
     title="点云",
-    xaxis=dict(title="前后", range=[0, 10], scaleanchor="y", scaleratio=1, constrain="domain"),
-    yaxis=dict(title="左右", range=[-5, 5], scaleanchor="x", scaleratio=1, constrain="domain"),
+    xaxis=dict(title="前后", range=[0, x_max], scaleanchor="y", scaleratio=1, constrain="domain"),
+    yaxis=dict(title="左右", range=[-y_max, y_max], scaleanchor="x", scaleratio=1, constrain="domain"),
 )
 fig.show()
 
@@ -239,8 +258,8 @@ for i in range(10, numFrame):
     listData.append(data)
 fig = dh.draw_animation(listData, title="超分辨率后点云")
 fig.update_layout(
-    xaxis=dict(title="前后", range=[0, 10], scaleanchor="y", scaleratio=1, constrain="domain"),
-    yaxis=dict(title="左右", range=[-5, 5], scaleanchor="x", scaleratio=1, constrain="domain"),
+    xaxis=dict(title="前后", range=[0, x_max], scaleanchor="y", scaleratio=1, constrain="domain"),
+    yaxis=dict(title="左右", range=[-y_max, y_max], scaleanchor="x", scaleratio=1, constrain="domain"),
 )
 fig.show()
 
@@ -270,7 +289,7 @@ measurement_model = CartesianToBearingRange(  # 内置的 笛卡尔坐标系转�
 all_measurements = []
 timesteps = [start_time]
 for i, objs in enumerate(_objectsList):
-    timestamp = start_time + timedelta(seconds=i * timeFrame)
+    timestamp = start_time + timedelta(seconds=i * timeFrameFull)
     timesteps.append(timestamp)
     measurement_set = set()
     for p in objs:
@@ -291,7 +310,10 @@ plotter.fig
 from stonesoup.predictor.kalman import ExtendedKalmanPredictor
 from stonesoup.models.transition.linear import CombinedLinearGaussianTransitionModel, ConstantVelocity
 
-transition_model = CombinedLinearGaussianTransitionModel([ConstantVelocity(0.05), ConstantVelocity(0.05)])
+"""
+这里的状态转移噪声需要根据实际情况调整，越大滤波结果越接近测量值
+"""
+transition_model = CombinedLinearGaussianTransitionModel([ConstantVelocity(2), ConstantVelocity(2)])
 predictor = ExtendedKalmanPredictor(transition_model)
 
 from stonesoup.updater.kalman import ExtendedKalmanUpdater
@@ -304,7 +326,7 @@ updater = ExtendedKalmanUpdater(measurement_model)
 from stonesoup.hypothesiser.probability import PDAHypothesiser
 from stonesoup.dataassociator.probability import JPDA
 
-hypothesiser = PDAHypothesiser(predictor=predictor, updater=updater, clutter_spatial_density=0.125, prob_detect=0.9)
+hypothesiser = PDAHypothesiser(predictor=predictor, updater=updater, clutter_spatial_density=0.3, prob_detect=0.9)
 
 data_associator = JPDA(hypothesiser=hypothesiser)
 
@@ -317,11 +339,15 @@ from stonesoup.types.array import StateVectors
 from stonesoup.functions import gm_reduce_single
 from stonesoup.types.update import GaussianStateUpdate
 
-prior1 = GaussianState([[0.43], [0], [-0.8], [0]], np.diag([1.5, 0.5, 1.5, 0.5]), timestamp=timesteps[50])
+"""
+这里需要手动设置初始状态，因为没有添加Initiators和Deleters
+"""
+prior1 = GaussianState([[43.5], [0], [-7.1], [0]], np.diag([10, 5, 10, 5]), timestamp=timesteps[0])
+prior2 = GaussianState([[75], [0], [-6.23], [0]], np.diag([10, 5, 10, 5]), timestamp=timesteps[0])
 
-tracks = {Track([prior1])}
+tracks = {Track([prior1]), Track([prior2])}
 
-for n in range(50, len(all_measurements)):
+for n in range(0, len(all_measurements)):
     measurements = all_measurements[n]
     hypotheses = data_associator.associate(tracks, measurements, timesteps[n])
 
@@ -355,20 +381,7 @@ plotter.plot_tracks(tracks, [0, 2], uncertainty=True)
 # 显示跟踪结果
 
 plotter.fig.update_layout(
-    xaxis=dict(title="前后", range=[0, 10], scaleanchor="y", scaleratio=1, constrain="domain"),
-    yaxis=dict(title="左右", range=[-5, 5], scaleanchor="x", scaleratio=1, constrain="domain"),
+    xaxis=dict(title="前后", range=[0, x_max], scaleanchor="y", scaleratio=1, constrain="domain"),
+    yaxis=dict(title="左右", range=[-y_max, y_max], scaleanchor="x", scaleratio=1, constrain="domain"),
 )
 plotter.fig.show()
-
-# %%
-# dh.save_plotly_animation_as_video(plotter.fig, fps=20)
-
-# %% 观察一帧数据
-i = 181
-go.Figure(data=[go.Surface(z=ampSpec2DList[i, 0])]).show()
-go.Figure(data=[go.Surface(z=ampSpec2DList[i, 1])]).show()
-go.Figure(data=[go.Surface(z=noiseList[i])]).show()
-go.Figure(data=[go.Surface(z=snrList[i])]).show()
-print(indicesList_full[i])
-print(pointCloudList[i])
-# %%

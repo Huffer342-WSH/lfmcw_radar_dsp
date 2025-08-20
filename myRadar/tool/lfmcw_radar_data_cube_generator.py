@@ -6,7 +6,7 @@ import scipy.constants
 import joblib
 
 
-def generateRadarDataCube(frequency, bandwidth, timeChirp, timeIdle, timeNop, freqSampling, numSampling, numChirp, numFrame, posTx, posRx, targetsInfo):
+def generateRadarDataCube(frequency, bandwidth, timeChirp, timeIdle, timeFrameGap, freqSampling, numSampling, numChirp, numFrame, posTx, posRx, targetsInfo):
     """
     生成LFMCW雷达数据立方体
 
@@ -20,8 +20,8 @@ def generateRadarDataCube(frequency, bandwidth, timeChirp, timeIdle, timeNop, fr
         一个chirp的持续时间
     timeIdle : float
         两个chirp之间的时间间隔
-    timeNop : float
-        一帧数据的结尾
+    timeFrameGap : float
+        两帧之间的时间间隔
     freqSampling : float
         采样频率
     numSampling : int
@@ -53,21 +53,23 @@ def generateRadarDataCube(frequency, bandwidth, timeChirp, timeIdle, timeNop, fr
     axisTime = (
         np.tile(np.linspace(0, numSampling / freqSampling, numSampling, endpoint=False), numChirp * numFrame)
         + np.repeat(np.linspace(0, numChirp * numFrame * (timeIdle + timeChirp), numChirp * numFrame, endpoint=False), numSampling)
-        + np.repeat(np.linspace(0, numFrame * timeNop, numFrame, endpoint=False), numSampling * numChirp)
+        + np.repeat(np.linspace(0, numFrame * timeFrameGap, numFrame, endpoint=False), numSampling * numChirp)
     ) + unusedChirp / 2
 
-    def clacPhase(axisT, fc, timeChirp, timeIdle, timeNop, numChirp, slope):
-        t = (axisT % ((timeChirp + timeIdle) * numChirp + timeNop)) % (timeChirp + timeIdle)
+    def clacPhase(axisT, fc, timeChirp, timeIdle, timeFrameGap, numChirp, slope):
+        t = (axisT % ((timeChirp + timeIdle) * numChirp + timeFrameGap)) % (timeChirp + timeIdle)
         phase = 2 * np.pi * t * (fc + 0.5 * slope * t)
         return phase
 
-    def clacPhase_parallel(axisT, fc, timeChirp, timeIdle, timeNop, numChirp, slope):
+    def clacPhase_parallel(axisT, fc, timeChirp, timeIdle, timeFrameGap, numChirp, slope):
         num_slices = joblib.cpu_count() * 8
         axisT_slices = np.array_split(axisT, num_slices)
-        results = joblib.Parallel(n_jobs=-1)(joblib.delayed(clacPhase)(slice_, fc, timeChirp, timeIdle, timeNop, numChirp, slope) for slice_ in axisT_slices)
+        results = joblib.Parallel(n_jobs=-1)(
+            joblib.delayed(clacPhase)(slice_, fc, timeChirp, timeIdle, timeFrameGap, numChirp, slope) for slice_ in axisT_slices
+        )
         return np.concatenate(results)
 
-    phaseTx = clacPhase_parallel(axisTime, frequency, timeChirp, timeIdle, timeNop, numChirp, bandwidth / timeChirp)
+    phaseTx = clacPhase_parallel(axisTime, frequency, timeChirp, timeIdle, timeFrameGap, numChirp, bandwidth / timeChirp)
 
     signal = np.zeros((numTx * numRx, numSampling * numChirp * numFrame), dtype=np.complex128)
 
@@ -96,7 +98,7 @@ def generateRadarDataCube(frequency, bandwidth, timeChirp, timeIdle, timeNop, fr
                     target["rsc"]
                     / (disTx**2)
                     / (disRx**2)
-                    * np.exp(1j * (phaseTx - clacPhase_parallel(txTimeStamp, frequency, timeChirp, timeIdle, timeNop, numChirp, bandwidth / timeChirp)))
+                    * np.exp(1j * (phaseTx - clacPhase_parallel(txTimeStamp, frequency, timeChirp, timeIdle, timeFrameGap, numChirp, bandwidth / timeChirp)))
                 )
     tragetsPos = np.array(tragetsPos)
     signal = signal.reshape(numTx * numRx, numFrame, numChirp, numSampling).swapaxes(0, 1)
@@ -116,7 +118,7 @@ if __name__ == "__main__":
     bandwidth = 1000e6
     timeChirp = 150e-6
     timeIdle = 200e-6
-    timeNop = 2000e-6  #
+    timeFrameGap = 2000e-6  #
     freqSampling = 1e6
 
     numSampling = 128
@@ -138,7 +140,7 @@ if __name__ == "__main__":
     targetsInfo = [target0, target1]
 
     signal, _ = generateRadarDataCube(
-        frequency, bandwidth, timeChirp, timeIdle, timeNop, freqSampling, numSampling, numChirp, numFrame, posTx, posRx, targetsInfo
+        frequency, bandwidth, timeChirp, timeIdle, timeFrameGap, freqSampling, numSampling, numChirp, numFrame, posTx, posRx, targetsInfo
     )
 
     frame0 = signal[0, 0, :]
