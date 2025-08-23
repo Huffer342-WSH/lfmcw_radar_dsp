@@ -23,7 +23,7 @@ from .mcu_packet import McuPacket_Manager
 from . import datapacket
 from .usart import Usart
 from .core import Processor, RadarInitParam, RadarConfig, RadarCFARConfig, RadarCFARFilterConfig, TrackConfig, DBSCANConfig, TrackedTarget
-
+from .faker_packet import McuPacket_Manager as FakerPacket_Manager
 
 class BackEnd(multiprocessing.Process, base.BaseLogger):
 
@@ -63,10 +63,6 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         self.numChirp = 0
 
         self.__tempFrame = {}
-
-        self._hasRaw = False
-        self._hasRangeFFT = False
-        self._has2DFFT = False
 
     def __initialize(self):
         self.packet_queue = queue.Queue(maxsize=32)
@@ -129,25 +125,43 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
             return False
 
     def receiveOnePacket(self, type: str, data: bytes):
-        packet = None
-        func = self._callback_map.get(type, None)
-        if func is not None:
-            packet = func(type, data)
-        else:
-            self.log_warning(f"Unsupported type: {type}")
-            return False
         ret = None
+
+        func = self._callback_map.get(type, None)
+        if func is None:
+            self.log_warning(f"Unsupported packet type: {type}")
+            return ret
+
+        packet = func(type, data)
+
+        # 检查帧号，假如是新的一帧，则返回上一帧数据，否则返回空
         if self.update_idxFrame(packet.idxFrame):
             self.__tempFrame["idxFrame"] = self.idxFrame
-            ret = copy.deepcopy(self.__tempFrame)
+            ret = self.__tempFrame
+            self.__tempFrame = {}
 
+        # 将数据存入临时帧
         self.__tempFrame[self._type_map[type]] = packet
+
         return ret
 
+    def genFigure_RAW(self, raw: np.ndarray):
+        msg = dict()
+        data = []
+        numChannel, numChirp, numSample = raw.shape
+        for i in range(numChannel):
+            for j in range(numChirp):
+                data.append(go.Scatter(y=raw[i, j, :], name=f"Rx{i}-{j}"))
+
+        msg["fig_raw"] = {
+            "fig": go.Figure(
+                data=data,
+                layout=go.Layout(title="RAW"),
+            )
+        }
+        return msg
+
     def genFigure_2DFFT(self, rdm: np.ndarray):
-
-        self.processor(rdm, timestamp=datetime.datetime.now())
-
         for target in self.processor.tracked_targets:
             target: TrackedTarget
             self.log_debug(f"Target {target.uuid} socre: {target.life_cycle.score}")
@@ -157,7 +171,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         # 图1 幅度谱
         magSepc2D = fftshift(np.sum(np.abs(rdm), axis=0).T, axes=0)
 
-        msg["fig0"] = {
+        msg["fig_rdm"] = {
             "fig": go.Figure(
                 data=go.Heatmap(z=magSepc2D),
                 layout=go.Layout(title="RDM"),
@@ -240,7 +254,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
             )
         )
 
-        msg["fig1"] = {
+        msg["fig_target"] = {
             "fig": go.Figure(
                 data=figure_data,
                 layout=go.Layout(
@@ -277,43 +291,53 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         frame["tracked_targets"] = [target.get_dict() for target in self.processor.tracked_targets]
         frame["unconfirmed_targets"] = [target.get_dict() for target in self.processor.unconfirmed_targets]
 
-    def createThreadReceivePacket(self):
-        def task():
-            self.log_debug("接收数据线程启动")
-            while self.event_shutdown.is_set() == False:
-                packet_type, packet_data = self.packet_queue.get()
-                self.log_debug(f"接收到数据包:{packet_type}")
+    def run_processor(self):
+        self.log_debug("接收数据线程启动")
+        while self.event_shutdown.is_set() == False:
+            packet_type, packet_data = self.packet_queue.get()
+            self.log_debug(f"接收到数据包:{packet_type}")
 
-                frame = self.receiveOnePacket(packet_type, packet_data)
-                if frame is not None and self.is_init:
+            frame = self.receiveOnePacket(packet_type, packet_data)
+            if frame is None or not self.is_init:
+                # 一帧未结束或者没有初始化完成
+                continue
 
-                    msg = dict()
+            # 处理数据并绘制图像
+            msg = dict()
 
-                    rdm = frame.get("Signal2DFFT")
-                    if rdm is not None:
-                        temp = self.genFigure_2DFFT(rdm.transpose(0, 2, 1))
-                        msg.update(temp)
+            ## RDM
+            rdm = frame.get("Signal2DFFT")
+            if rdm is not None:
+                rdm = rdm.transpose(0, 2, 1)  # (numChannel, numRangeBin,numChirp)
+                self.processor(rdm, timestamp=datetime.datetime.now())
+                msg.update(self.genFigure_2DFFT(rdm))
 
-                    # 发送数据
-                    if not self.message_queue.full():
-                        self.message_queue.put(msg)
+            ## 原始数据
+            raw = frame.get("SignalRaw")
+            if raw is not None:
+                msg.update(self.genFigure_RAW(raw))
 
-                    self.save2frame(frame)
+            # 发送图像给前端
+            if not self.message_queue.full():
+                self.message_queue.put(msg)
 
-                    self.bufferFrame.append(frame)
-
-        return threading.Thread(target=task, daemon=True)
+            # 将处理结果和数据保存到帧缓存
+            self.save2frame(frame)
+            self.bufferFrame.append(frame)
 
     def run(self) -> None:
         self.__initialize()
 
         self.log_debug(f"进程启动 PID:{multiprocessing.current_process().pid}")
 
-        self.mcuPackerManager = McuPacket_Manager(port=self.serial_config["name"], baudrate=self.serial_config["baudrate"], queue=self.packet_queue)
+        if self.serial_config["name"] == "Faker":
+            self.mcuPackerManager = FakerPacket_Manager(port=self.serial_config["name"], baudrate=self.serial_config["baudrate"], queue=self.packet_queue)
+        else:
+            self.mcuPackerManager = McuPacket_Manager(port=self.serial_config["name"], baudrate=self.serial_config["baudrate"], queue=self.packet_queue)
         self.mcuPackerManager.logger.setLevel(logging.WARNING)
 
         # 接收数据线程启动
-        thread_recv_packet = self.createThreadReceivePacket()
+        thread_recv_packet = threading.Thread(target=self.run_processor)
         thread_recv_packet.start()
         self.mcuPackerManager.start()
 

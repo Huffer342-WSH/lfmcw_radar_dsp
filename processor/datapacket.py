@@ -8,8 +8,8 @@ class AT24G_RawData_RealI16(np.ndarray):
             return
         info = np.frombuffer(data[:6], dtype=np.uint8)
         numChannel = info[1]
-        numChirp = info[2] + info[3] * 256
-        numSample = info[4] + info[5] * 256
+        numChirp = int(info[2]) + int(info[3]) * 256
+        numSample = int(info[4]) + int(info[5]) * 256
         temp = np.frombuffer(data[6:], dtype=np.int16).reshape(numChirp, numSample, numChannel).transpose(2, 0, 1)
         obj = temp.view(cls)
         return obj
@@ -20,8 +20,8 @@ class AT24G_RawData_RealI16(np.ndarray):
         self.data_type = "AT24G_RawData_RealInt16"
         info = np.frombuffer(data, dtype=np.uint8)
         self.idxFrame = info[0]
-        self.numSample = info[4] + info[5] * 256
-        self.numChirp = info[2] + info[3] * 256
+        self.numChirp = int(info[2]) + int(info[3]) * 256
+        self.numSample = int(info[4]) + int(info[5]) * 256
         self.numChannel = info[1]
 
 

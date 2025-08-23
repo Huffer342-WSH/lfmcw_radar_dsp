@@ -22,8 +22,6 @@ class FrontEnd(base.BaseLogger):
         self.parent_conn = conn
         self._setup_layout()
         self._setup_callbacks()
-        self.threads = []
-        # self.threads.append(self.create_thread())
 
         self.message_queue = queue
         self.fig_buffer = {"fig0": {"fig": go.Figure()}, "fig1": {"fig": go.Figure()}}
@@ -34,14 +32,60 @@ class FrontEnd(base.BaseLogger):
         """
         self.app.layout = html.Div(
             children=[
-                # 实时更新的间隔设置
                 dcc.Interval(id="interval-component", interval=1000 / 10, n_intervals=120),
-                dcc.Graph(id="fig0"),
-                dcc.Graph(id="fig1", style={"height": "800px"}),
-                # 按钮
-                html.Button("⏸暂停", id="btn-pause", n_clicks=0, style={"margin-right": "10px"}),
-                html.Button("保存数据", id="btn-savedata", n_clicks=0),
-                html.Div(id="output-state"),
+                # 顶部下拉框控制区
+                html.Div(
+                    [
+                        dcc.Dropdown(
+                            id="dropdown-fig0",
+                            options=[
+                                {"label": "原始数据(raw)", "value": "raw"},
+                                {"label": "距离-多普勒(rdm)", "value": "rdm"},
+                                {"label": "目标检测(target)", "value": "target"},
+                                {"label": "不显示", "value": "none"},
+                            ],
+                            value="raw",
+                            clearable=False,
+                            style={"width": "30%", "display": "inline-block", "margin-right": "10px"},
+                        ),
+                        dcc.Dropdown(
+                            id="dropdown-fig1",
+                            options=[
+                                {"label": "原始数据(raw)", "value": "raw"},
+                                {"label": "距离-多普勒(rdm)", "value": "rdm"},
+                                {"label": "目标检测(target)", "value": "target"},
+                                {"label": "不显示", "value": "none"},
+                            ],
+                            value="none",
+                            clearable=False,
+                            style={"width": "30%", "display": "inline-block", "margin-right": "10px"},
+                        ),
+                        dcc.Dropdown(
+                            id="dropdown-fig2",
+                            options=[
+                                {"label": "原始数据(raw)", "value": "raw"},
+                                {"label": "距离-多普勒(rdm)", "value": "rdm"},
+                                {"label": "目标检测(target)", "value": "target"},
+                                {"label": "不显示", "value": "none"},
+                            ],
+                            value="none",
+                            clearable=False,
+                            style={"width": "30%", "display": "inline-block"},
+                        ),
+                    ],
+                    style={"margin-bottom": "20px"},
+                ),
+                # 图像容器
+                html.Div(id="graph-container"),
+                # 按钮区
+                html.Div(
+                    [
+                        html.Button("⏸暂停", id="btn-pause", n_clicks=0, style={"margin-right": "10px"}),
+                        html.Button("保存数据", id="btn-savedata", n_clicks=0),
+                        html.Div(id="output-state"),
+                    ],
+                    style={"margin-top": "20px"},
+                ),
             ],
         )
 
@@ -49,21 +93,49 @@ class FrontEnd(base.BaseLogger):
         """
         Configures the callbacks for the Dash application.
         """
+        def default_figure(msg="无数据可展示"):
+            fig = go.Figure()
+            fig.add_annotation(text=msg, xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False, font=dict(size=20, color="red"))
+            fig.update_layout(xaxis=dict(visible=False), yaxis=dict(visible=False))
+            return fig
 
         @self.app.callback(
-            [Output("fig0", "figure"), Output("fig1", "figure")],
-            Input("interval-component", "n_intervals"),
+            Output("graph-container", "children"),
+            [
+                Input("interval-component", "n_intervals"),
+                Input("dropdown-fig0", "value"),
+                Input("dropdown-fig1", "value"),
+                Input("dropdown-fig2", "value"),
+            ],
         )
-        def update_dashboard(n):
+        def update_graphs(n, sel0, sel1, sel2):
+            # 更新 buffer
+            while self.message_queue.qsize() > 8:
+                self.message_queue.get_nowait()
             if not self.message_queue.empty():
                 self.fig_buffer = self.message_queue.get()
 
-            # 图1  距离-时间
+            def genGraph(selection: str):
+                if selection == "none":
+                    return default_figure()
+                key_map = {"raw": ("fig_raw", 350), "rdm": ("fig_rdm", 350), "target": ("fig_target", 800)}
 
-            fig0 = self.fig_buffer.get("fig0", {}).get("fig", go.Figure())
-            fig1 = self.fig_buffer.get("fig1", {}).get("fig", go.Figure())
+                fig_name, height = key_map.get(selection, (None, None))
+                if fig_name is None:
+                    return default_figure()
 
-            return (fig0, fig1)
+                packet = self.fig_buffer.get(fig_name)
+                if packet is None:
+                    return default_figure()
+
+                fig = packet.get("fig")
+                return dcc.Graph(id=f"fig{i}", figure=fig, style={"height": f"{height}px"})
+
+            graphs = []
+            for i, sel in enumerate([sel0, sel1, sel2]):
+                if sel != "none":
+                    graphs.append(genGraph(sel))
+            return graphs
 
         @self.app.callback(
             [
@@ -90,17 +162,7 @@ class FrontEnd(base.BaseLogger):
                 return f"[{current_time}]: 已保存"
             return ""
 
-    def create_thread(self):
-        def background_task():
-            while True:
-                data = self.message_queue.get(timeout=10)
-                self.log_debug(f"receive data: {data}")
-                print(f"DashAppWrapper receive data")
-                self.fig_buffer = data
-
-        return threading.Thread(target=background_task, daemon=True)
-
-    def run(self, host="127.0.0.1", port=8050, debug=True):
+    def run(self, host="127.0.0.1", port: str = "8050", debug=True):
         """
         Runs the Dash application.
         """

@@ -16,7 +16,8 @@ class Application:
         self.para, self.son = multiprocessing.Pipe(duplex=True)
 
         # 初始化串口配置
-        self.serial_config = {"name": "/dev/ttyUSB2", "baudrate": 3250000}
+        # self.serial_config = {"name": "Faker", "baudrate": 0}  # 仿真数据，而非串口
+        # self.serial_config = {"name": "/dev/ttyUSB2", "baudrate": 3250000}
         self.serial_config["name"] = Usart.select_serial_port()
 
         # 创建前端和后端对象
