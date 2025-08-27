@@ -45,14 +45,15 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         conn: multiprocessing.connection._ConnectionBase,
         event_shutdown: multiprocessing.synchronize.Event,
         serial_config,
+        log_level=logging.DEBUG,
     ):
         multiprocessing.Process.__init__(self)
-        base.BaseLogger.__init__(self)
 
         self.message_queue = message_queue
         self.conn = conn
         self.event_shutdown = event_shutdown
         self.serial_config = serial_config
+        self.log_level = log_level
 
         self.is_init = False
         self.cntFrame: int = 0
@@ -65,10 +66,10 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         self.__tempFrame = {}
 
     def __initialize(self):
+        base.BaseLogger.__init__(self, level=self.log_level)
         self.packet_queue = queue.Queue(maxsize=32)
         self.frame_queue = queue.Queue(maxsize=32)
         self.bufferFrame = deque(maxlen=2000)
-
         self.processor = self.creat_radar_processor()
 
     def creat_radar_processor(self) -> Processor:
@@ -196,7 +197,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
                         size=4,
                         color="rgba(62,143,230,1)",
                     ),
-                    name="测量值",
+                    name="目标跟踪",
                 )
             )
 
@@ -215,7 +216,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
                         size=10,
                     ),
                     line=dict(width=3, color="rgba(79,89,238,0.8)"),
-                    name="测量值",
+                    name="簇",
                 )
             )
 
@@ -228,7 +229,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
                 x=y,
                 y=x,
                 mode="markers",
-                name="已跟踪目标",
+                name="起始阶段跟踪目标",
                 marker=dict(
                     symbol="diamond",
                     size=8,
@@ -259,8 +260,8 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
                 data=figure_data,
                 layout=go.Layout(
                     title="点云",
-                    xaxis=dict(title="左右", range=[-4, 4], scaleanchor="y", scaleratio=1, constrain="domain"),
-                    yaxis=dict(title="前后", range=[0, 10], scaleanchor="x", scaleratio=1, constrain="domain"),
+                    xaxis=dict(title="左 - 右", range=[-4, 4], scaleanchor="y", scaleratio=1, constrain="domain"),
+                    yaxis=dict(title="后 - 前", range=[0, 10], scaleanchor="x", scaleratio=1, constrain="domain"),
                     legend=dict(orientation="h", entrywidth=70, yanchor="bottom", y=1.02, xanchor="center", x=0.5),
                 ),
             )
@@ -330,7 +331,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
 
         self.log_debug(f"进程启动 PID:{multiprocessing.current_process().pid}")
 
-        if self.serial_config["name"] == "Faker":
+        if self.serial_config["name"] == "None":
             self.mcuPackerManager = FakerPacket_Manager(port=self.serial_config["name"], baudrate=self.serial_config["baudrate"], queue=self.packet_queue)
         else:
             self.mcuPackerManager = McuPacket_Manager(port=self.serial_config["name"], baudrate=self.serial_config["baudrate"], queue=self.packet_queue)
@@ -342,7 +343,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         self.mcuPackerManager.start()
 
         # 预接收一些数据
-        while self.cntFrame < 3:
+        while self.cntFrame < 1:
             time.sleep(0.1)
         self.is_init = True
         self.log_info(

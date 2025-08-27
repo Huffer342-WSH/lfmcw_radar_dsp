@@ -16,14 +16,22 @@ class Application:
         self.para, self.son = multiprocessing.Pipe(duplex=True)
 
         # 初始化串口配置
-        # self.serial_config = {"name": "Faker", "baudrate": 0}  # 仿真数据，而非串口
-        # self.serial_config = {"name": "/dev/ttyUSB2", "baudrate": 3250000}
-        self.serial_config["name"] = Usart.select_serial_port()
+        # self.serial_config = {"name": "None", "baudrate": 0}  # 仿真数据，而非串口
+        # self.serial_config = {"name": "COM17", "baudrate": 3250000} # 假如知道串口名可以写死
+        self.serial_config = {
+            "name": Usart.select_serial_port(),
+            "baudrate": 3250000,
+        }
 
         # 创建前端和后端对象
         self.app_wrapper = FrontEnd(queue=self.message_queue, conn=self.para)
-        self.backend = BackEnd(message_queue=self.message_queue, conn=self.son, event_shutdown=self.event_shutdown, serial_config=self.serial_config)
-        self.backend.logger.setLevel(logging.INFO)
+        self.backend = BackEnd(
+            message_queue=self.message_queue,
+            conn=self.son,
+            event_shutdown=self.event_shutdown,
+            serial_config=self.serial_config,
+            log_level=logging.WARNING,
+        )
 
     def start(self, debug=False):
         """启动应用程序"""

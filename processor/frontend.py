@@ -18,13 +18,14 @@ class FrontEnd(base.BaseLogger):
         """
         Initializes the Dash application.
         """
+
         self.app = Dash(__name__, title=title, update_title=update_title)
         self.parent_conn = conn
         self._setup_layout()
         self._setup_callbacks()
 
         self.message_queue = queue
-        self.fig_buffer = {"fig0": {"fig": go.Figure()}, "fig1": {"fig": go.Figure()}}
+        self.fig_buffer = dict()
 
     def _setup_layout(self):
         """
@@ -56,7 +57,7 @@ class FrontEnd(base.BaseLogger):
                                 {"label": "目标检测(target)", "value": "target"},
                                 {"label": "不显示", "value": "none"},
                             ],
-                            value="none",
+                            value="rdm",
                             clearable=False,
                             style={"width": "30%", "display": "inline-block", "margin-right": "10px"},
                         ),
@@ -68,7 +69,7 @@ class FrontEnd(base.BaseLogger):
                                 {"label": "目标检测(target)", "value": "target"},
                                 {"label": "不显示", "value": "none"},
                             ],
-                            value="none",
+                            value="target",
                             clearable=False,
                             style={"width": "30%", "display": "inline-block"},
                         ),
@@ -93,11 +94,6 @@ class FrontEnd(base.BaseLogger):
         """
         Configures the callbacks for the Dash application.
         """
-        def default_figure(msg="无数据可展示"):
-            fig = go.Figure()
-            fig.add_annotation(text=msg, xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False, font=dict(size=20, color="red"))
-            fig.update_layout(xaxis=dict(visible=False), yaxis=dict(visible=False))
-            return fig
 
         @self.app.callback(
             Output("graph-container", "children"),
@@ -109,32 +105,32 @@ class FrontEnd(base.BaseLogger):
             ],
         )
         def update_graphs(n, sel0, sel1, sel2):
+
+            def genGraph(selection: str):
+                key_map = {"raw": ("fig_raw", 350, "原始数据"), "rdm": ("fig_rdm", 350, "距离-多普勒"), "target": ("fig_target", 800, "目标检测")}
+
+                fig_name, height, label = key_map.get(selection, (None, None, None))
+                if fig_name is None:
+                    return None
+
+                packet = self.fig_buffer.get(fig_name)
+                if packet is None:
+                    return html.Div(f"{label} 暂无数据", style={"height": "30px", "display": "flex", "alignItems": "center"})
+
+                fig = packet.get("fig")
+                return dcc.Graph(id=f"fig{i}", figure=fig, style={"height": f"{height}px"})
+
             # 更新 buffer
             while self.message_queue.qsize() > 8:
                 self.message_queue.get_nowait()
             if not self.message_queue.empty():
                 self.fig_buffer = self.message_queue.get()
 
-            def genGraph(selection: str):
-                if selection == "none":
-                    return default_figure()
-                key_map = {"raw": ("fig_raw", 350), "rdm": ("fig_rdm", 350), "target": ("fig_target", 800)}
-
-                fig_name, height = key_map.get(selection, (None, None))
-                if fig_name is None:
-                    return default_figure()
-
-                packet = self.fig_buffer.get(fig_name)
-                if packet is None:
-                    return default_figure()
-
-                fig = packet.get("fig")
-                return dcc.Graph(id=f"fig{i}", figure=fig, style={"height": f"{height}px"})
-
             graphs = []
             for i, sel in enumerate([sel0, sel1, sel2]):
-                if sel != "none":
-                    graphs.append(genGraph(sel))
+                g = genGraph(sel)
+                if g is not None:
+                    graphs.append(g)
             return graphs
 
         @self.app.callback(

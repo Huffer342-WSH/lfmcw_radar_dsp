@@ -111,15 +111,17 @@ class Usart(multiprocessing.Process):
     def in_waiting(self):
         return self.buffer._used_space()
 
-    def select_serial_port():
+    @staticmethod
+    def select_serial_port() -> str | None:
         ports = serial.tools.list_ports.comports()
-        port_list = []
+        port_list = ["None"]
 
         if not ports:
             print("No serial ports found.")
             return None
 
         print("Available serial ports:")
+        print("0: None")
         for i, port in enumerate(ports):
             port_info = f"{i + 1}: {port.device} - {port.description}"
             print(port_info)
@@ -127,7 +129,7 @@ class Usart(multiprocessing.Process):
 
         while True:
             try:
-                choice = int(input("Select a port by number: ")) - 1
+                choice = int(input("Select a port by number: "))
                 if 0 <= choice < len(port_list):
                     selected_port = port_list[choice]
                     print(f"You selected: {selected_port}")
