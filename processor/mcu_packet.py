@@ -168,15 +168,14 @@ class McuPacket_Manager(threading.Thread, base.BaseLogger):
                 else:
                     self.log_info(f"Packet Wrapper OK")
 
-                # 回调并校验
-                _data = buffer[sizeHead + sizeInfo : sizeHead + sizeInfo + _dataSize]
-                if self.packet_queue.full():
-                    self.log_warning("packet queue is full")
-                else:
-                    self.packet_queue.put((TYPE_MAP[_type], _data))
-
                 # 回调成功
                 if flag == True:
+                    _data = buffer[sizeHead + sizeInfo : sizeHead + sizeInfo + _dataSize]
+                    try:
+                        self.packet_queue.put_nowait((TYPE_MAP[_type], _frameID, _data))
+                    except queue.Full:
+                        self.log_warning("packet queue is full")
+
                     del buffer[0:packetSize]  # 缓冲区删除一个包
                     if len(buffer) > 20000:
                         self.log_warning(f"Parsing speed cannot keep up with input speed")
