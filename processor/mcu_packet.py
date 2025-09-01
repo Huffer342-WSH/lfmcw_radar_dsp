@@ -112,7 +112,6 @@ class McuPacket_Manager(threading.Thread, base.BaseLogger):
             1: "AT24G-RangeFFT-ComplexI16",
             2: "AT24G-2DFFT-ComplexI16",
             3: "TrackedObjectInfo",
-            4: "RawData_RealI16",
         }
 
         state = ST_HEAD
@@ -201,6 +200,9 @@ def parse(type: str, data: bytes):
         queuePacket.append(packet)
     elif type == "AT24G-2DFFT-ComplexI16":
         packet = datapacket.AT24G_2DFFT_ComplexI16(type, data)
+        queuePacket.append(packet)
+    elif type == "TrackedObjectInfo":
+        packet = datapacket.TrackedObjectInfo(type, data)
         queuePacket.append(packet)
     else:
         print("unknown type: ", type)

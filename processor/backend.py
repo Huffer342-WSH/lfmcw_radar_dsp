@@ -9,6 +9,7 @@ import datetime
 import logging
 from collections import deque
 from itertools import chain
+from typing import Tuple
 
 
 import numpy as np
@@ -31,12 +32,14 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         "AT24G-RawData-RealI16": "SignalRaw",
         "AT24G-RangeFFT-ComplexI16": "SignalRangeFFT",
         "AT24G-2DFFT-ComplexI16": "Signal2DFFT",
+        "TrackedObjectInfo": "Targets",
     }
 
     _callback_map = {
         "AT24G-RawData-RealI16": datapacket.AT24G_RawData_RealI16,
         "AT24G-RangeFFT-ComplexI16": datapacket.AT24G_RangeFFT_ComplexI16,
         "AT24G-2DFFT-ComplexI16": datapacket.AT24G_2DFFT_ComplexI16,
+        "TrackedObjectInfo": datapacket.TrackedObjectInfo,
     }
 
     def __init__(
@@ -76,7 +79,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         processor = Processor(
             param=RadarInitParam(
                 wavelength=scipy.constants.c / 24.125e9,
-                bandwidth=204e6,
+                bandwidth=612e6,
                 rx_antenna_spacing=6.98e-3,
                 timeChirp=2.461538e-5,
                 timeChirpGap=1.310367e-03,
@@ -106,7 +109,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
                     init_missed_distance=2.0,
                     init_covar=np.diag([0.7, 0.2, 0.7, 0.2, 0.7, 0.2]) ** 2,
                     fov=np.array([-np.pi * 45 / 180, np.pi * 45 / 180]),
-                    radius_range=np.array([0.3, 8.0]),
+                    radius_range=np.array([0.3, 12.0]),
                 ),
                 channel_phase_diff_threshold=np.pi * 0.9,
             ),
@@ -125,7 +128,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         else:
             return False
 
-    def receiveOnePacket(self, type: str, data: bytes):
+    def receiveOnePacket(self, type: str, frame_idx: int, data: bytes):
         ret = None
 
         func = self._callback_map.get(type, None)
@@ -134,9 +137,11 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
             return ret
 
         packet = func(type, data)
+        if type == "TrackedObjectInfo":
+            print(f"Targtes Num: {packet.num_targets} {packet}")
 
         # 检查帧号，假如是新的一帧，则返回上一帧数据，否则返回空
-        if self.update_idxFrame(packet.idxFrame):
+        if self.update_idxFrame(frame_idx):
             self.__tempFrame["idxFrame"] = self.idxFrame
             ret = self.__tempFrame
             self.__tempFrame = {}
@@ -146,48 +151,33 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
 
         return ret
 
-    def genFigure_RAW(self, raw: np.ndarray):
-        msg = dict()
-        data = []
-        numChannel, numChirp, numSample = raw.shape
+    def genFigureData_RAW(self, raw: np.ndarray) -> list:
+        figdata = []
+        numChannel, numChirp, _ = raw.shape
         for i in range(numChannel):
             for j in range(numChirp):
-                data.append(go.Scatter(y=raw[i, j, :], name=f"Rx{i}-{j}"))
+                figdata.append(go.Scatter(y=raw[i, j, :], name=f"Rx{i}-{j}"))
 
-        msg["fig_raw"] = {
-            "fig": go.Figure(
-                data=data,
-                layout=go.Layout(title="RAW"),
-            )
-        }
-        return msg
+        return figdata
 
-    def genFigure_2DFFT(self, rdm: np.ndarray):
+    def genFigureData_2DFFT(self, rdm: np.ndarray) -> Tuple[list, list]:
         for target in self.processor.tracked_targets:
             target: TrackedTarget
             self.log_debug(f"Target {target.uuid} socre: {target.life_cycle.score}")
 
-        msg = dict()
-
         # 图1 幅度谱
         magSepc2D = fftshift(np.sum(np.abs(rdm), axis=0).T, axes=0)
-
-        msg["fig_rdm"] = {
-            "fig": go.Figure(
-                data=go.Heatmap(z=magSepc2D),
-                layout=go.Layout(title="RDM"),
-            )
-        }
+        figdata_rdm = [go.Heatmap(z=magSepc2D)]
 
         # 图2 点云
-        figure_data = []
+        figdata_pos = []
 
         # 2.1 点云
         measurements = np.array(list(chain.from_iterable(self.processor.basic.multi_frame_meas)))
         if measurements.ndim == 2:
             x = measurements[:, 1] * np.cos(measurements[:, 0])
             y = measurements[:, 1] * np.sin(measurements[:, 0])
-            figure_data.append(
+            figdata_pos.append(
                 go.Scatter(
                     x=y,
                     y=x,
@@ -206,7 +196,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         if points.ndim == 2:
             x = points[:, 1] * np.cos(points[:, 0])
             y = points[:, 1] * np.sin(points[:, 0])
-            figure_data.append(
+            figdata_pos.append(
                 go.Scatter(
                     x=y,
                     y=x,
@@ -224,7 +214,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
         targets = self.processor.unconfirmed_targets
         x = np.array([target.state.state_vector[0, 0] for target in targets])
         y = np.array([target.state.state_vector[2, 0] for target in targets])
-        figure_data.append(
+        figdata_pos.append(
             go.Scatter(
                 x=y,
                 y=x,
@@ -237,11 +227,12 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
                 ),
             )
         )
+
         # 2.2 已跟踪目标
         targets = self.processor.tracked_targets
         x = np.array([target.state.state_vector[0, 0] for target in targets])
         y = np.array([target.state.state_vector[2, 0] for target in targets])
-        figure_data.append(
+        figdata_pos.append(
             go.Scatter(
                 x=y,
                 y=x,
@@ -250,23 +241,62 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
                 marker=dict(
                     symbol="circle",
                     size=8,
-                    color="rgba(255,0,0,0.8)",
+                    color="rgba(208,38,38,0.8)",
                 ),
             )
         )
 
-        msg["fig_target"] = {
-            "fig": go.Figure(
-                data=figure_data,
-                layout=go.Layout(
-                    title="点云",
-                    xaxis=dict(title="左 - 右", range=[-4, 4], scaleanchor="y", scaleratio=1, constrain="domain"),
-                    yaxis=dict(title="后 - 前", range=[0, 10], scaleanchor="x", scaleratio=1, constrain="domain"),
-                    legend=dict(orientation="h", entrywidth=70, yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+        return (figdata_rdm, figdata_pos)
+
+    def genFigureData_targets(self, targets: datapacket.TrackedObjectInfo | None) -> list:
+        figdata = []
+
+        if targets is None:
+            return figdata
+
+        print(f"targets.shape: {targets.shape}")
+
+        figdata.append(
+            go.Scatter(
+                x=targets.y,
+                y=targets.x,
+                mode="markers",
+                name="已跟踪目标(MCU)",
+                marker=dict(
+                    symbol="circle-dot",
+                    size=8,
+                    color="rgba(0,139,69,0.8)",
                 ),
             )
-        }
-        return msg
+        )
+
+        return figdata
+
+    def drawFigure_raw(self, data: list):
+        fig = go.Figure(
+            data=data,
+            layout=go.Layout(title="RAW"),
+        )
+        return fig
+
+    def drawFigure_rdm(self, data: list):
+        fig = go.Figure(
+            data=data,
+            layout=go.Layout(title="RDM"),
+        )
+        return fig
+
+    def drawFigure_pos(self, data: list):
+        fig = go.Figure(
+            data=data,
+            layout=go.Layout(
+                title="点云",
+                xaxis=dict(title="左 - 右", range=[-5, 5], scaleanchor="y", scaleratio=1, constrain="domain"),
+                yaxis=dict(title="后 - 前", range=[0, 10], scaleanchor="x", scaleratio=1, constrain="domain"),
+                legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02),
+            ),
+        )
+        return fig
 
     def saveData(self) -> None:
         self.log_info("Saving data...")
@@ -295,28 +325,49 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
     def run_processor(self):
         self.log_debug("接收数据线程启动")
         while self.event_shutdown.is_set() == False:
-            packet_type, packet_data = self.packet_queue.get()
+            packet_type, frame_idx, packet_data = self.packet_queue.get()
             self.log_debug(f"接收到数据包:{packet_type}")
 
-            frame = self.receiveOnePacket(packet_type, packet_data)
+            frame = self.receiveOnePacket(packet_type, frame_idx, packet_data)
             if frame is None or not self.is_init:
                 # 一帧未结束或者没有初始化完成
                 continue
 
-            # 处理数据并绘制图像
+            # 处理数据并绘图
             msg = dict()
+            figdata_raw = []
+            figdata_rdm = []
+            figdata_pos = []
+
+            ## 原始数据
+            raw = frame.get("SignalRaw")
+            if raw is not None:
+                figdata_raw.extend(self.genFigureData_RAW(raw))
 
             ## RDM
             rdm = frame.get("Signal2DFFT")
             if rdm is not None:
                 rdm = rdm.transpose(0, 2, 1)  # (numChannel, numRangeBin,numChirp)
                 self.processor(rdm, timestamp=datetime.datetime.now())
-                msg.update(self.genFigure_2DFFT(rdm))
+                data_rdm, data_target = self.genFigureData_2DFFT(rdm)
+                figdata_rdm.extend(data_rdm)
+                figdata_pos.extend(data_target)
 
-            ## 原始数据
-            raw = frame.get("SignalRaw")
-            if raw is not None:
-                msg.update(self.genFigure_RAW(raw))
+            ## 目标跟踪数据
+            targets = frame.get("Targets")
+            if targets is not None:
+                figdata_pos.extend(self.genFigureData_targets(targets))
+
+            # 生成Figure
+            msg["fig_raw"] = {
+                "fig": self.drawFigure_raw(figdata_raw),
+            }
+            msg["fig_rdm"] = {
+                "fig": self.drawFigure_rdm(figdata_rdm),
+            }
+            msg["fig_target"] = {
+                "fig": self.drawFigure_pos(figdata_pos),
+            }
 
             # 发送图像给前端
             if not self.message_queue.full():
@@ -335,7 +386,7 @@ class BackEnd(multiprocessing.Process, base.BaseLogger):
             self.mcuPackerManager = FakerPacket_Manager(port=self.serial_config["name"], baudrate=self.serial_config["baudrate"], queue=self.packet_queue)
         else:
             self.mcuPackerManager = McuPacket_Manager(port=self.serial_config["name"], baudrate=self.serial_config["baudrate"], queue=self.packet_queue)
-        self.mcuPackerManager.logger.setLevel(logging.WARNING)
+        self.mcuPackerManager.logger.setLevel(logging.DEBUG)
 
         # 接收数据线程启动
         thread_recv_packet = threading.Thread(target=self.run_processor)

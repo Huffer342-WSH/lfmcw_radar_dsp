@@ -75,6 +75,77 @@ class AT24G_2DFFT_ComplexI16(np.ndarray):
 
         return obj
 
+    def __init__(self, type, data):
+        self.idxFrame = 0
+
+
+class TrackedObjectInfo(np.ndarray):
+
+    num_targets: int
+    data_type: str
+    uuid: np.ndarray
+    _raw: np.ndarray
+    _raw_bytes: bytes
+
+    def __new__(cls, type: str, data: bytes):
+        assert type == "TrackedObjectInfo"
+        # 原始 dtype
+        raw_dtype = np.dtype(
+            [
+                ("uuid", np.uint32),
+                ("x", np.int32),
+                ("vx", np.int32),
+                ("y", np.int32),
+                ("vy", np.int32),
+            ]
+        )
+
+        # 解析原始结构化数组
+        raw_arr = np.frombuffer(data, dtype=raw_dtype)
+
+        # 转换成浮点数矩阵 (只存 x,vx,y,vy)
+        float_arr = np.empty((raw_arr.shape[0], 4), dtype=np.float32)
+        float_arr[:, 0] = raw_arr["x"] * 0.01
+        float_arr[:, 1] = raw_arr["vx"] * 0.01
+        float_arr[:, 2] = raw_arr["y"] * 0.01
+        float_arr[:, 3] = raw_arr["vy"] * 0.01
+
+        # 创建 ndarray 视图
+        obj = np.asarray(float_arr).view(cls)
+
+        # 保存元信息
+        obj.num_targets = raw_arr.shape[0]
+        obj.data_type = "Datapacker-Targets"
+        obj.uuid = raw_arr["uuid"].copy()  # 单独保存 uuid
+        obj._raw = raw_arr  # 原始结构化数组
+        obj._raw_bytes = data  # 原始字节流
+
+        return obj
+
+    @property
+    def x(self) -> np.ndarray:
+        return self[:, 0]
+
+    @property
+    def vx(self) -> np.ndarray:
+        return self[:, 1]
+
+    @property
+    def y(self) -> np.ndarray:
+        return self[:, 2]
+
+    @property
+    def vy(self) -> np.ndarray:
+        return self[:, 3]
+
+    def raw_array(self) -> np.ndarray:
+        """返回未缩放的结构化数组 (uuid, x, vx, y, vy)."""
+        return self._raw
+
+    def raw_bytes(self) -> bytes:
+        """返回原始字节流."""
+        return self._raw_bytes
+
 
 def saveChirps(chirps, filename: str):
     savedata = dict()
